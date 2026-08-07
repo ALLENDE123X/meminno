@@ -41,7 +41,7 @@ export default function PrivacyPage() {
           <h2 className="text-2xl font-semibold">3. What we&apos;ll collect once the product launches</h2>
           <p>
             When Meminno actually launches, using the product will involve collecting more than an email address.
-            Most notably, whatever coursework you choose to upload or paste (PDFs, pasted notes/text) so our AI
+            Most notably, that includes whatever coursework you choose to upload or paste (PDFs, pasted notes/text) so our AI
             (via OpenAI) can generate notes, flashcards, and quizzes from it, plus account and billing information
             if you subscribe. We&apos;ll treat that content as sensitive, since it&apos;s your own coursework, and
             we&apos;ll update this policy with the specifics (retention, deletion, exactly which third-party
