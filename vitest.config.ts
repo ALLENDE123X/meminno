@@ -6,7 +6,11 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./vitest.setup.ts'],
-    exclude: ['**/e2e/**', '**/node_modules/**'],
+    // '**/.claude/**' matters as soon as any worktree lives under
+    // .claude/worktrees/ alongside the main checkout (see CLAUDE.md's
+    // worktree convention) - without it, `npm test` in the main checkout
+    // picks up every test file duplicated inside any sibling worktree too.
+    exclude: ['**/e2e/**', '**/node_modules/**', '**/.claude/**'],
     testTimeout: 20000,
     passWithNoTests: true,
   },

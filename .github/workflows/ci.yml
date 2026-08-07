@@ -25,7 +25,19 @@ jobs:
           --health-retries 5
 
     env:
-      DATABASE_URL: postgres://test:test@localhost:5432/meminno_test
+      # MEM-002-fix (issue #14): CI reproduces production's two-role split
+      # rather than doing everything as one superuser, so the RLS assertions
+      # in tests/integration/rls.test.ts prove the same thing here that they
+      # would there. Passwords are throwaway values for an ephemeral
+      # localhost container, not secrets.
+      #
+      # Runtime/app role — owns nothing, RLS fully applies (mirrors meminno_rls).
+      DATABASE_URL: postgres://meminno_rls:ci_rls_pw@localhost:5432/meminno_test
+      # Table-owning migration role — NOT a superuser (mirrors meminno_app).
+      MIGRATION_DATABASE_URL: postgres://meminno_app:ci_app_pw@localhost:5432/meminno_test
+      # Container superuser — used only by the bootstrap step below, which
+      # stands in for the one-time privileged Supabase bootstrap in prod.
+      ADMIN_DATABASE_URL: postgres://test:test@localhost:5432/meminno_test
       NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
       NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder-anon-key
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -45,6 +57,92 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # MEM-002 / MEM-002-fix: the migrations reference four roles
+      # (`authenticated`, `anon`, `meminno_app`, `meminno_rls`), an `auth`
+      # schema, and `public.rls_current_user_id()` - all real in the live
+      # Supabase project but absent from this vanilla postgres:17 service
+      # container. This step stands in for the one-time privileged bootstrap
+      # that CREATE ROLE and the `auth` stubs get in production (a role
+      # cannot create roles or reach into `auth` itself; see CLAUDE.md's
+      # "Two-role database architecture" section for the production
+      # equivalent). It deliberately does NOT do everything as the container
+      # superuser: `meminno_app` is created NOSUPERUSER and granted exactly
+      # what MEM-001's production block granted it, so `drizzle-kit migrate`
+      # exercises the same privilege envelope it has against the real
+      # project, and `FORCE ROW LEVEL SECURITY` is genuinely observable in
+      # tests (a superuser would bypass RLS unconditionally and the
+      # isolation assertions would prove nothing). This must never move into
+      # a migration file - the same files run against the real project,
+      # which already has real versions of all of this.
+      - name: Bootstrap roles + Supabase auth stubs (stands in for prod's privileged bootstrap)
+        run: |
+          psql "$ADMIN_DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          DO $do$
+          BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticated') THEN
+              CREATE ROLE authenticated NOLOGIN;
+            END IF;
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'anon') THEN
+              CREATE ROLE anon NOLOGIN;
+            END IF;
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'meminno_app') THEN
+              CREATE ROLE meminno_app WITH LOGIN PASSWORD 'ci_app_pw'
+                NOSUPERUSER NOCREATEROLE NOBYPASSRLS INHERIT;
+            END IF;
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'meminno_rls') THEN
+              CREATE ROLE meminno_rls WITH LOGIN PASSWORD 'ci_rls_pw'
+                NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS INHERIT;
+            END IF;
+          END
+          $do$;
+
+          -- Mirrors MEM-001's production CREATE ROLE block for meminno_app
+          -- (see CLAUDE.md). CREATE ON DATABASE is what drizzle-kit's own
+          -- `CREATE SCHEMA "drizzle"` tracking table needs.
+          GRANT ALL ON SCHEMA public TO meminno_app;
+          GRANT CREATE ON DATABASE meminno_test TO meminno_app;
+
+          CREATE SCHEMA IF NOT EXISTS auth;
+          CREATE TABLE IF NOT EXISTS auth.users (
+            id uuid PRIMARY KEY DEFAULT gen_random_uuid()
+          );
+
+          -- Matches the real project's auth schema grants (verified via
+          -- Supabase's execute_sql: `anon`/`authenticated` both have USAGE,
+          -- granted by supabase_admin) - without this, `authenticated`
+          -- evaluating a policy that calls public.rls_current_user_id()
+          -- (which calls auth.uid() internally) fails with "permission
+          -- denied for schema auth", caught by actually running this
+          -- suite's assertions against a local postgres:17 container before
+          -- trusting this step would work in CI.
+          GRANT USAGE ON SCHEMA auth TO authenticated, anon;
+
+          -- Matches the real auth.uid() definition on the live project
+          -- (verified via Supabase's execute_sql before writing this)
+          -- exactly, so a test that passes here behaves the same way there.
+          CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
+          LANGUAGE sql STABLE
+          AS $fn$
+            select
+            coalesce(
+              nullif(current_setting('request.jwt.claim.sub', true), ''),
+              (nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'sub')
+            )::uuid
+          $fn$;
+
+          -- Matches the real public.rls_current_user_id() definition
+          -- (bootstrapped once on the live project - see CLAUDE.md). LEGACY:
+          -- nothing references it any more after MEM-002-fix replaced it
+          -- with public.meminno_current_user_id() (created by migration
+          -- 0002, no bootstrap needed). It stays here only so migration
+          -- 0001 - which still contains the original CREATE POLICY
+          -- statements - can be replayed from scratch.
+          CREATE OR REPLACE FUNCTION public.rls_current_user_id() RETURNS uuid
+          LANGUAGE sql STABLE SECURITY INVOKER
+          SET search_path = ''
+          AS $fn$ SELECT auth.uid() $fn$;
+          SQL
 
       - name: Apply Drizzle migrations
         run: npx drizzle-kit migrate

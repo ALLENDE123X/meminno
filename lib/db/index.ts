@@ -1,4 +1,22 @@
+// The app's RUNTIME database connection.
+//
+// DATABASE_URL here is the `meminno_rls` role (MEM-002-fix, issue #14), NOT
+// the `meminno_app` role that owns the tables and runs migrations. That
+// split is the whole point: `meminno_rls` owns nothing, holds only explicit
+// per-table grants, and has no BYPASSRLS attribute, so every RLS policy in
+// ./schema.ts genuinely applies to every query this module issues. The
+// migration role lives in MIGRATION_DATABASE_URL and is only ever used by
+// drizzle-kit (see drizzle.config.ts) - never import it here.
+//
+// Consequence, and the reason `withUserContext()` below exists: because
+// every user table is `FORCE ROW LEVEL SECURITY` with policies scoped to
+// `public.meminno_current_user_id()`, a bare `db.select().from(documents)`
+// on this connection returns ZERO rows unless the caller's identity has
+// been put on the session first. Route handlers must go through
+// `withUserContext(session.user.id, ...)`; that is not a convention to
+// remember, it is enforced by the database.
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js'
+import { sql } from 'drizzle-orm'
 import postgres from 'postgres'
 import * as schema from './schema'
 
@@ -56,3 +74,36 @@ if (process.env.DATABASE_URL) {
 
 export { db }
 export type DbType = typeof db
+
+/** The transaction handle `withUserContext()` hands to its callback. */
+export type DbTransaction = Parameters<Parameters<PostgresJsDatabase<typeof schema>['transaction']>[0]>[0]
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Runs `fn` inside a transaction whose session identity is `userId`, which
+ * is what every RLS policy in ./schema.ts scopes rows by.
+ *
+ * `set_config(..., true)` is transaction-local, so the identity can never
+ * leak into a later query that reuses the same pooled connection - this
+ * matters specifically because Supabase's transaction-mode pooler (port
+ * 6543) hands the same backend connection to unrelated requests between
+ * transactions. Session-level `SET` would be a cross-tenant data leak here;
+ * `SET LOCAL`/`set_config(_, _, true)` is the only safe form.
+ *
+ * `userId` is bound as a parameter (never interpolated), and additionally
+ * validated as a UUID so a malformed value fails here with a clear error
+ * rather than as an opaque cast failure inside every policy evaluation.
+ */
+export async function withUserContext<T>(
+  userId: string,
+  fn: (tx: DbTransaction) => Promise<T>,
+): Promise<T> {
+  if (!UUID_RE.test(userId)) {
+    throw new Error('withUserContext: userId must be a UUID (got a non-UUID value)')
+  }
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.current_user_id', ${userId}, true)`)
+    return fn(tx)
+  })
+}

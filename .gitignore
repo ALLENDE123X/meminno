@@ -48,3 +48,7 @@ next-env.d.ts
 
 # scratch / debug artifacts
 *.log
+
+# git worktrees (one per in-flight ticket branch, per CLAUDE.md's parallel-
+# implementation convention) - never belongs in a commit.
+.claude/
