@@ -25,7 +25,7 @@ export function StatCard({ stats }: { stats: WeeklyStats }) {
           <div className="text-3xl font-bold">{stats.everActive ? 'Quiet week' : 'Just getting started'}</div>
           <p className="max-w-md text-slate-300">
             {stats.everActive
-              ? "No study activity logged this week — jump back in and next week's card will have real numbers."
+              ? "No study activity logged this week. Jump back in and next week's card will have real numbers."
               : 'Upload your first document to start building your Meminno stat card.'}
           </p>
         </div>

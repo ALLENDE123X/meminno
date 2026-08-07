@@ -121,7 +121,7 @@ function StatCardImage(props: StatCardImageParams) {
           </div>
           <div style={{ display: 'flex', fontSize: 24, color: '#cbd5e1', maxWidth: 780 }}>
             {everActive
-              ? "No study activity logged this week - jump back in and next week's card will have real numbers."
+              ? "No study activity logged this week. Jump back in and next week's card will have real numbers."
               : 'Upload your first document to start building your Meminno stat card.'}
           </div>
         </div>

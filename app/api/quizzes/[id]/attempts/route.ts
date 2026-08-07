@@ -86,7 +86,7 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
     // assumption, same as app/api/me/route.ts's "should be unreachable"
     // convention for a similarly-impossible-in-practice state.
     logger.error({ userId, quizId }, 'Quiz row has malformed questions data')
-    return NextResponse.json({ error: 'This quiz could not be scored — its questions are malformed' }, { status: 500 })
+    return NextResponse.json({ error: 'This quiz could not be scored, its questions are malformed' }, { status: 500 })
   }
 
   const { answers } = parsedBody.data

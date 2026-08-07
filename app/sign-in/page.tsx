@@ -41,7 +41,7 @@ export default function SignInPage() {
 
     if (error) {
       setStatus('error')
-      setMessage(error.message || 'Something went wrong — try again.')
+      setMessage(error.message || 'Something went wrong, try again.')
       return
     }
 
@@ -61,7 +61,7 @@ export default function SignInPage() {
           <CardDescription>
             {status === 'sent'
               ? `We sent a sign-in link to ${email}. Check your inbox (and spam folder).`
-              : "No password needed — we'll email you a one-click sign-in link."}
+              : "No password needed. We'll email you a one-click sign-in link."}
           </CardDescription>
         </CardHeader>
         {status !== 'sent' && (

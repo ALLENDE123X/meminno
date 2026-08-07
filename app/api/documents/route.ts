@@ -116,7 +116,7 @@ export async function POST(req: Request) {
       extracted = await extractTextFromPdf(new Uint8Array(await parsed.file.arrayBuffer()))
     } catch (error) {
       logger.error({ error, userId }, 'PDF text extraction failed')
-      return NextResponse.json({ error: 'Could not read this PDF — it may be corrupted or password-protected' }, { status: 422 })
+      return NextResponse.json({ error: 'Could not read this PDF, it may be corrupted or password-protected' }, { status: 422 })
     }
     if (!extracted) {
       return NextResponse.json(

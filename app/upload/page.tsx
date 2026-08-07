@@ -3,7 +3,7 @@ import { SiteHeader } from '@/components/site-header'
 import { UploadForm } from '@/components/upload-form'
 
 export const metadata: Metadata = {
-  title: 'Upload — Meminno',
+  title: 'Upload | Meminno',
 }
 
 // MEM-004's route, restyled and given real navigation (MEM-008) — see

@@ -26,7 +26,7 @@ function toURLSearchParams(sp: Record<string, string | string[] | undefined>): U
 export async function generateMetadata({ searchParams }: { searchParams: SearchParams }): Promise<Metadata> {
   const params = toURLSearchParams(await searchParams)
   if (!verifyStatCardSignature(params)) {
-    return { title: 'Invalid share link — Meminno' }
+    return { title: 'Invalid share link | Meminno' }
   }
 
   const imagePath = `/api/stat-card?${params.toString()}`

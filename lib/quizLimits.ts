@@ -84,7 +84,7 @@ export async function checkQuizBurstLimit(userId: string): Promise<QuizLimitResu
     return {
       ok: false,
       status: 429,
-      reason: 'Too many quiz-generation requests — please slow down and try again shortly.',
+      reason: 'Too many quiz-generation requests, please slow down and try again shortly.',
     }
   }
   return { ok: true }
@@ -114,7 +114,7 @@ export async function claimQuizBudget(userId: string, plan: string): Promise<Qui
 
   const withinPlatformCap = await claimDailyBudget('quiz-generation', PLATFORM_DAILY_QUIZ_CAP)
   if (!withinPlatformCap) {
-    return { ok: false, status: 429, reason: 'Meminno is experiencing high demand right now — please try again later.' }
+    return { ok: false, status: 429, reason: 'Meminno is experiencing high demand right now, please try again later.' }
   }
 
   return { ok: true }
