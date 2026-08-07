@@ -11,10 +11,9 @@ export const metadata: Metadata = {
   description: 'A shareable weekly recap of your Meminno study activity.',
 }
 
-// MEM-009. No dashboard shell/nav exists yet - this is reached directly by
-// URL for now, which is all this ticket needs ("this ticket doesn't need to
-// build the full dashboard, just this card/feature and a sensible route to
-// view it").
+// MEM-009, now reached via the real dashboard nav (MEM-008's
+// app/dashboard/layout.tsx wraps this route with SiteHeader) instead of
+// only by direct URL.
 //
 // Session check goes through lib/session.ts's getSessionUser() (MEM-003's
 // session-gate helper, merged after this ticket's first draft — reconciled
@@ -29,9 +28,9 @@ export default async function WeeklyStatsPage() {
 
   if (!session.ok) {
     return (
-      <main className="flex min-h-screen flex-col items-center justify-center gap-4 p-8 text-center">
+      <main className="flex flex-col items-center justify-center gap-4 px-8 py-24 text-center">
         <h1 className="text-2xl font-semibold">Sign in to see your weekly stat card</h1>
-        <p className="max-w-md text-zinc-500">
+        <p className="max-w-md text-muted-foreground">
           Meminno turns your study activity — documents, flashcards, quizzes — into a shareable weekly recap.
           Sign in to see yours.
         </p>
@@ -52,10 +51,10 @@ export default async function WeeklyStatsPage() {
   const shareUrl = buildStatCardShareUrl(stats)
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-8 p-8">
+    <main className="mx-auto flex max-w-3xl flex-col gap-8 px-8 py-10">
       <div>
         <h1 className="text-2xl font-semibold">Your weekly stat card</h1>
-        <p className="text-zinc-500">A snapshot of the last 7 days, ready to share.</p>
+        <p className="text-muted-foreground">A snapshot of the last 7 days, ready to share.</p>
       </div>
 
       <StatCard stats={stats} />
