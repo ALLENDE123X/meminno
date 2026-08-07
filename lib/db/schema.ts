@@ -228,8 +228,12 @@ export const quizzes = pgTable('quizzes', {
   id: uuid('id').defaultRandom().primaryKey(),
   noteId: uuid('note_id').notNull().references(() => notes.id, { onDelete: 'cascade' }),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  // App-defined shape (finalized in MEM-008), e.g. an array of
-  // { question, options, correctAnswer }. Deliberately untyped jsonb -
+  // App-defined shape, finalized by MEM-007's generation side (see
+  // lib/quizGeneration.ts's generatedQuizSchema): an array of
+  // { question, options: [4 strings], correctAnswer }, i.e. standard
+  // 4-option multiple choice with correctAnswer copied verbatim from one of
+  // the 4 options. MEM-008 (Core UI) still owns the quiz-taking UI itself,
+  // but this column's shape is no longer TBD. Deliberately untyped jsonb -
   // matches Propinno's raw/amenities/commuteIsochrone convention of casting
   // the shape explicitly at call sites rather than modeling it in the schema.
   questions: jsonb('questions').notNull(),
