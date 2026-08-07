@@ -46,6 +46,10 @@ jobs:
       SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
       STRIPE_SECRET_KEY: test_sk
       STRIPE_WEBHOOK_SECRET: whsec_test
+      # MEM-009: throwaway value for CI only — real environments (Vercel
+      # Production/Preview, local .env.local) use a real `openssl rand -hex
+      # 32` secret. See lib/stats.ts and .env.example.
+      STAT_CARD_SIGNING_SECRET: ci-only-stat-card-signing-secret-not-for-prod
 
     steps:
       - uses: actions/checkout@v4
