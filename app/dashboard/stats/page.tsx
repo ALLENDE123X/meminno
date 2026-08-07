@@ -7,7 +7,7 @@ import { CopyShareLinkButton } from '@/components/copy-share-link-button'
 import { buttonVariants } from '@/components/ui/button'
 
 export const metadata: Metadata = {
-  title: 'Your weekly stats — Meminno',
+  title: 'Your weekly stats | Meminno',
   description: 'A shareable weekly recap of your Meminno study activity.',
 }
 
@@ -31,7 +31,7 @@ export default async function WeeklyStatsPage() {
       <main className="flex flex-col items-center justify-center gap-4 px-8 py-24 text-center">
         <h1 className="text-2xl font-semibold">Sign in to see your weekly stat card</h1>
         <p className="max-w-md text-muted-foreground">
-          Meminno turns your study activity — documents, flashcards, quizzes — into a shareable weekly recap.
+          Meminno turns your study activity (documents, flashcards, quizzes) into a shareable weekly recap.
           Sign in to see yours.
         </p>
         <Link href="/sign-in" className={buttonVariants()}>

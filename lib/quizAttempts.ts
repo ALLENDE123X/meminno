@@ -85,7 +85,7 @@ export type AttemptLimitResult = { ok: true } | { ok: false; status: 429; reason
 export async function checkQuizAttemptBurstLimit(userId: string): Promise<AttemptLimitResult> {
   const burst = await limitRequest(`meminno-quiz-attempt-burst:${userId}`)
   if (!burst.success) {
-    return { ok: false, status: 429, reason: 'Too many quiz-attempt submissions — please slow down and try again shortly.' }
+    return { ok: false, status: 429, reason: 'Too many quiz-attempt submissions, please slow down and try again shortly.' }
   }
   return { ok: true }
 }

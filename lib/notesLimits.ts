@@ -74,7 +74,7 @@ export async function checkNotesBurstLimit(userId: string): Promise<NotesLimitRe
   // own rate-limit/budget keys in the same instance.
   const burst = await limitRequest(`meminno-notes-burst:${userId}`)
   if (!burst.success) {
-    return { ok: false, status: 429, reason: 'Too many notes-generation requests — please slow down and try again shortly.' }
+    return { ok: false, status: 429, reason: 'Too many notes-generation requests, please slow down and try again shortly.' }
   }
   return { ok: true }
 }
@@ -103,7 +103,7 @@ export async function claimNotesBudget(userId: string, plan: string): Promise<No
 
   const withinPlatformCap = await claimDailyBudget('notes-generation', PLATFORM_DAILY_NOTES_CAP)
   if (!withinPlatformCap) {
-    return { ok: false, status: 429, reason: 'Meminno is experiencing high demand right now — please try again later.' }
+    return { ok: false, status: 429, reason: 'Meminno is experiencing high demand right now, please try again later.' }
   }
 
   return { ok: true }

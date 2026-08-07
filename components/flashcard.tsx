@@ -18,7 +18,7 @@ export function Flashcard({ front, back }: { front: string; back: string }) {
       type="button"
       onClick={() => setFlipped((f) => !f)}
       aria-pressed={flipped}
-      aria-label={flipped ? 'Showing answer — click to show the question' : 'Showing question — click to reveal the answer'}
+      aria-label={flipped ? 'Showing answer, click to show the question' : 'Showing question, click to reveal the answer'}
       className="group h-48 w-full text-left [perspective:1000px] focus-visible:outline-none"
     >
       <div

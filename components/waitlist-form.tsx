@@ -27,16 +27,16 @@ export function WaitlistForm({ className }: { className?: string }) {
 
       if (!res.ok) {
         setStatus("error")
-        setMessage(data?.error ?? "Something went wrong — try again.")
+        setMessage(data?.error ?? "Something went wrong, try again.")
         return
       }
 
       setStatus("success")
-      setMessage("You're on the list — we'll email you the second we open up.")
+      setMessage("You're on the list. We'll email you the second we open up.")
       setEmail("")
     } catch {
       setStatus("error")
-      setMessage("Couldn't reach the server — check your connection and try again.")
+      setMessage("Couldn't reach the server, check your connection and try again.")
     }
   }
 
