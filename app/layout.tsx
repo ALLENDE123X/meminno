@@ -7,9 +7,12 @@ import { SpeedInsights } from "@vercel/speed-insights/next";
 const geist = Geist({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Meminno — Upload your coursework, get notes, flashcards, quizzes",
-  description: "Upload or paste your coursework and get AI-generated notes, flashcards, and quizzes in minutes.",
-  metadataBase: new URL("https://meminno.com"),
+  title: "Meminno — Turn your coursework into notes, flashcards, and quizzes",
+  description:
+    "Upload a PDF or paste your notes and Meminno's AI builds your study notes, flashcards, and a quiz in minutes — plus a shareable weekly progress card.",
+  // No custom domain purchased yet — this must stay the real deployed URL
+  // (not a hardcoded future domain) until one is bought. See CLAUDE.md.
+  metadataBase: new URL("https://meminno.vercel.app"),
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
