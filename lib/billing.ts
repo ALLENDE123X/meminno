@@ -60,9 +60,13 @@
  * `invoice.payment_succeeded` for a renewal — subscribing to both would
  * double-process every cycle).
  *
- * API-VERSION NOTE (`2026-05-27.dahlia`, see lib/stripe.ts, same pin as
- * Propinno): the Invoice object on this version has NO top-level
- * `subscription` field — it's `invoice.parent.subscription_details.subscription`.
+ * API-VERSION NOTE (`2026-07-29.dahlia`, see lib/stripe.ts — a slightly
+ * newer `.dahlia` pin than Propinno's own `2026-05-27.dahlia`, inherited
+ * from this repo's MEM-001 scaffold rather than copied from Propinno): the
+ * Invoice object on this version likewise has NO top-level `subscription`
+ * field — it's `invoice.parent.subscription_details.subscription`. Verified
+ * against the installed `stripe@22` type definitions (same major version
+ * Propinno pins), not assumed from Propinno's own code.
  */
 
 import Stripe from 'stripe'
