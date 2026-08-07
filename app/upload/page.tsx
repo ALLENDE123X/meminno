@@ -1,15 +1,14 @@
 'use client'
 
 // Minimal upload UI for MEM-004 — deliberately small: there's no dashboard
-// shell or sign-in UI yet (both are separate, unstarted tickets — issue #3
-// "Auth" and the dashboard-shell scope noted in CLAUDE.md), so this page
-// only has to prove the real POST /api/documents route end to end for a
-// signed-in browser session. It relies on a Supabase Auth session cookie
-// already existing (set by whatever MEM-003 eventually builds); with no
-// session yet, submitting surfaces the same 401 the route itself returns,
-// which is the correct behavior to inherit, not something to special-case
-// here. A future dashboard/library UI (listing documents, richer errors,
-// upload progress) belongs to a later ticket, not this one.
+// shell yet (a separate, unstarted ticket), so this page only has to prove
+// the real POST /api/documents route end to end for a signed-in browser
+// session. It relies on a Supabase Auth session cookie already existing —
+// set by MEM-003's /sign-in flow, which now ships; with no session yet,
+// submitting surfaces the same 401 the route itself returns, which is the
+// correct behavior to inherit, not something to special-case here. A future
+// dashboard/library UI (listing documents, richer errors, upload progress)
+// belongs to a later ticket, not this one.
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
