@@ -1,4 +1,5 @@
-import { Button } from "@/components/ui/button";
+import Link from "next/link";
+import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { WaitlistForm } from "@/components/waitlist-form";
 
@@ -18,8 +19,8 @@ const FEATURES = [
   {
     title: "Your weekly stat card",
     description:
-      "A shareable card that sums up your week — cards reviewed, quizzes taken, streaks. Nothing else in this space has it.",
-    badge: "Only here",
+      "A shareable card that sums up your week — cards reviewed, quizzes taken, streaks — so the work you put in is easy to actually see.",
+    badge: "New",
   },
 ];
 
@@ -52,10 +53,8 @@ export default function Home() {
     <main className="flex min-h-screen flex-col bg-white text-black">
       <header className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-6">
         <span className="text-lg font-semibold tracking-tight">Meminno</span>
-        <a href="#waitlist">
-          <Button variant="outline" size="sm">
-            Join waitlist
-          </Button>
+        <a href="#waitlist" className={buttonVariants({ variant: "outline", size: "sm" })}>
+          Join waitlist
         </a>
       </header>
 
@@ -131,24 +130,22 @@ export default function Home() {
             </CardHeader>
             <CardContent>
               <p className="text-3xl font-bold">$0</p>
-              <a href="#waitlist">
-                <Button variant="outline" className="mt-4 w-full">
-                  Start free
-                </Button>
+              <a href="#waitlist" className={buttonVariants({ variant: "outline", className: "mt-4 w-full" })}>
+                Start free
               </a>
             </CardContent>
           </Card>
           <Card className="border-black">
             <CardHeader>
               <CardTitle>Monthly</CardTitle>
-              <CardDescription>Unlimited notes, flashcards, and quizzes, billed every month.</CardDescription>
+              <CardDescription>Higher monthly limits for notes, flashcards, and quizzes, billed every month.</CardDescription>
             </CardHeader>
             <CardContent>
               <p className="text-3xl font-bold">
                 $17.99<span className="text-base font-normal text-zinc-500">/mo</span>
               </p>
-              <a href="#waitlist">
-                <Button className="mt-4 w-full">Join waitlist</Button>
+              <a href="#waitlist" className={buttonVariants({ className: "mt-4 w-full" })}>
+                Join waitlist
               </a>
             </CardContent>
           </Card>
@@ -161,10 +158,8 @@ export default function Home() {
               <p className="text-3xl font-bold">
                 $59.99<span className="text-base font-normal text-zinc-500">/semester</span>
               </p>
-              <a href="#waitlist">
-                <Button variant="outline" className="mt-4 w-full">
-                  Join waitlist
-                </Button>
+              <a href="#waitlist" className={buttonVariants({ variant: "outline", className: "mt-4 w-full" })}>
+                Join waitlist
               </a>
             </CardContent>
           </Card>
@@ -182,8 +177,11 @@ export default function Home() {
         </div>
       </section>
 
-      <footer className="mx-auto w-full max-w-5xl px-6 py-10 text-center text-sm text-zinc-500">
-        © {new Date().getFullYear()} Meminno. Built for students.
+      <footer className="mx-auto flex w-full max-w-5xl flex-col items-center gap-2 px-6 py-10 text-center text-sm text-zinc-500">
+        <span>© {new Date().getFullYear()} Meminno. Built for students.</span>
+        <Link href="/privacy" className="underline hover:text-zinc-700">
+          Privacy Policy
+        </Link>
       </footer>
     </main>
   );

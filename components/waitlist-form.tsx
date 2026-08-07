@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 
@@ -65,6 +66,13 @@ export function WaitlistForm({ className }: { className?: string }) {
         </Button>
       </div>
       {status === "error" && message ? <p className="mt-2 text-sm text-red-600">{message}</p> : null}
+      <p className="mt-2 text-xs text-zinc-500">
+        We&apos;ll only use your email to let you know when Meminno opens up. See our{" "}
+        <Link href="/privacy" className="underline hover:text-zinc-700">
+          Privacy Policy
+        </Link>
+        .
+      </p>
     </form>
   )
 }
