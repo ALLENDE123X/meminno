@@ -59,6 +59,34 @@ describe('schema RLS wiring (lib/db/schema.ts)', () => {
     expect(config.policies).toHaveLength(0)
   })
 
+  it('withCheck on notes/flashcards/quizzes/quiz_attempts also verifies parent-row ownership (issue #23)', () => {
+    // Regression pin for issue #23: withCheck used to be an identical flat
+    // `user_id = caller` check to `using`, which let a caller forge a child
+    // row's parent FK (document_id/note_id/quiz_id) while claiming
+    // ownership via user_id alone. Each entry below is [table, parent
+    // table, parent FK column] - the EXISTS subquery must reference all
+    // three. `using` is deliberately NOT asserted here - it stays the flat
+    // check on purpose (see schema.ts's header comment).
+    const parentChecks: Array<[Parameters<typeof getTableConfig>[0], string, string]> = [
+      [notes, 'documents', 'document_id'],
+      [flashcards, 'notes', 'note_id'],
+      [quizzes, 'notes', 'note_id'],
+      [quizAttempts, 'quizzes', 'quiz_id'],
+    ]
+    for (const [table, parentTable, parentColumn] of parentChecks) {
+      const policy = getTableConfig(table).policies[0]
+      const withCheck = render(policy.withCheck)
+      expect(withCheck).toContain('EXISTS')
+      expect(withCheck).toContain(`public.${parentTable}`)
+      expect(withCheck).toContain(parentColumn)
+      // Still requires user_id = caller too - EXISTS alone (without the
+      // user_id check) would let anyone claim any row as long as SOME
+      // caller-visible parent existed, not necessarily one they own via
+      // this specific child row's own user_id.
+      expect(withCheck).toContain('public.meminno_current_user_id()) = user_id')
+    }
+  })
+
   it('notes/flashcards/quizzes/quiz_attempts denormalize user_id (see schema.ts header comment on why)', () => {
     for (const table of [notes, flashcards, quizzes, quizAttempts]) {
       const config = getTableConfig(table)

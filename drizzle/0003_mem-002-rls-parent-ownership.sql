@@ -1,0 +1,48 @@
+-- Tighten child-table RLS withCheck to verify parent ownership (issue #23).
+--
+-- Every child user table - notes, flashcards, quizzes, quiz_attempts - had
+-- an RLS policy scoped only by `user_id`: both `using` and `withCheck` were
+-- the identical flat check `(select public.meminno_current_user_id()) =
+-- user_id`. That is sufficient for reads (`using` alone fully scopes what a
+-- caller can SELECT/UPDATE-target/DELETE), but left a real gap on writes:
+-- user B could INSERT (or UPDATE) a child row with `user_id = B` while
+-- pointing its parent FK (document_id/note_id/quiz_id) at user A's parent
+-- row. The FK still resolves fine - Postgres enforces FK referential
+-- integrity with RLS bypassed by design, so a FK reference alone is never a
+-- row-level ownership check. Confirmed empirically against this live
+-- project (two disposable test users) on all four tables before writing
+-- this migration.
+--
+-- Severity, so this isn't overstated: no data leak (the unchanged `using`
+-- clause means the forger still can't SELECT the row back - verified), and
+-- not reachable through the app's own API (every route derives the parent
+-- id from an ownership-verified lookup before ever calling
+-- `withUserContext`, never from raw client input) - this only matters
+-- against a raw `meminno_rls` credential directly. Worth closing anyway: a
+-- weak existence oracle (FK-violation vs. success reveals whether a parent
+-- UUID exists) and orphan-ish rows the app's own invariants say should be
+-- impossible. A pre-existing MEM-002 schema property, uniform across all
+-- four tables, not introduced by any single ticket - see
+-- `lib/db/schema.ts`'s header comment for the full writeup.
+--
+-- Tightening-only, per CLAUDE.md HARD STOP 7: no role attribute, BYPASSRLS,
+-- or FORCE ROW LEVEL SECURITY touched. `using` is deliberately left
+-- unchanged on every table below - only `withCheck` gains an `EXISTS`
+-- subquery requiring the immediate parent row to already be visible to
+-- (i.e. owned by) the same caller:
+--   notes         -> documents (via document_id)
+--   flashcards    -> notes     (via note_id)
+--   quizzes       -> notes     (via note_id)
+--   quiz_attempts -> quizzes   (via quiz_id)
+-- `documents` and `users` need no equivalent change: `documents`' own
+-- parent is `users`, and `user_id` already *is* the FK to that parent, so
+-- the existing flat check already covers it; `users` has no parent at all.
+--
+-- Entirely drizzle-kit-generated from lib/db/schema.ts's updated
+-- `withCheck` expressions (`drizzle-kit generate`) - no hand-written
+-- GRANT/FORCE statements needed this time, unlike 0001/0002, since this
+-- migration adds no new table and touches no role or privilege.
+ALTER POLICY "flashcards_own_rows" ON "flashcards" TO authenticated,meminno_rls USING ((select public.meminno_current_user_id()) = user_id) WITH CHECK ((select public.meminno_current_user_id()) = user_id AND EXISTS (SELECT 1 FROM public.notes n WHERE n.id = note_id AND n.user_id = (select public.meminno_current_user_id())));--> statement-breakpoint
+ALTER POLICY "notes_own_rows" ON "notes" TO authenticated,meminno_rls USING ((select public.meminno_current_user_id()) = user_id) WITH CHECK ((select public.meminno_current_user_id()) = user_id AND EXISTS (SELECT 1 FROM public.documents d WHERE d.id = document_id AND d.user_id = (select public.meminno_current_user_id())));--> statement-breakpoint
+ALTER POLICY "quiz_attempts_own_rows" ON "quiz_attempts" TO authenticated,meminno_rls USING ((select public.meminno_current_user_id()) = user_id) WITH CHECK ((select public.meminno_current_user_id()) = user_id AND EXISTS (SELECT 1 FROM public.quizzes q WHERE q.id = quiz_id AND q.user_id = (select public.meminno_current_user_id())));--> statement-breakpoint
+ALTER POLICY "quizzes_own_rows" ON "quizzes" TO authenticated,meminno_rls USING ((select public.meminno_current_user_id()) = user_id) WITH CHECK ((select public.meminno_current_user_id()) = user_id AND EXISTS (SELECT 1 FROM public.notes n WHERE n.id = note_id AND n.user_id = (select public.meminno_current_user_id())));

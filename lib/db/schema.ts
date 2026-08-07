@@ -75,16 +75,36 @@
 //     out-of-band privileged bootstrap needed for it, unlike the old proxy.
 //   - `user_id` is denormalized onto notes/flashcards/quizzes/quiz_attempts
 //     (not derived by joining back through document_id/note_id/quiz_id) so
-//     every policy is a flat `user_id = <caller's own id>` check, no
+//     `using` stays a flat `user_id = <caller's own id>` check, no
 //     subqueries — this was an explicit ticket instruction ("denormalized
-//     for RLS simplicity"). Trade-off: a policy alone can't stop a caller
-//     from setting `user_id` to themselves while pointing
-//     `document_id`/`note_id` at another user's row (the FK still resolves
-//     - Postgres FKs don't check ownership). The app is expected to derive
-//     `user_id` from the parent row server-side rather than trust client
-//     input for it; a stricter EXISTS-based policy is a reasonable future
-//     hardening pass if that assumption turns out not to hold once MEM-005+
-//     ships real writes.
+//     for RLS simplicity"), and it's still true for reads: `using` alone
+//     already fully scopes what a caller can SELECT/UPDATE-target/DELETE.
+//   - PARENT-OWNERSHIP HARDENING (issue #23, fixed after MEM-002 shipped):
+//     `using`/`withCheck` being identical flat `user_id = caller` checks
+//     left a real gap on the write side specifically. A caller could set
+//     `user_id` to themselves while pointing `document_id`/`note_id`/
+//     `quiz_id` at another user's parent row - the FK still resolves fine
+//     (Postgres enforces FK referential integrity with RLS bypassed by
+//     design, so a FK alone never checks row-level ownership). Confirmed
+//     empirically against the live project on all four child tables before
+//     this fix. Severity was always bounded - no data leak (the `using`
+//     clause means the forger still can't SELECT the row back), and
+//     unreachable through the app's own API (every route derives the
+//     parent id from an ownership-verified lookup before it ever calls
+//     `withUserContext`, never from raw client input) - but it was a weak
+//     existence oracle (FK-violation vs. success reveals whether a parent
+//     UUID exists) and could leave orphan-ish rows the app's own invariants
+//     say should be impossible. Fixed by adding an `EXISTS` subquery to
+//     `withCheck` only (`using` is deliberately untouched, per the read
+//     scoping above) on notes/flashcards/quizzes/quiz_attempts, each
+//     checking that its immediate parent row is owned by the same caller:
+//     `notes` -> `documents`, `flashcards` -> `notes`, `quizzes` ->
+//     `notes`, `quiz_attempts` -> `quizzes`. `documents` needs no
+//     equivalent change - its own parent is `users`, and `user_id` already
+//     *is* the FK to that parent, so the existing flat check already covers
+//     it. See drizzle/0003_mem-002-rls-parent-ownership.sql for the
+//     migration and CLAUDE.md's HARD STOP 7 for why this was scoped as a
+//     tightening-only change (no role/BYPASSRLS/FORCE touched).
 //   - `authenticated`/`anon` are Supabase-managed roles this migration never
 //     creates, and `meminno_app`/`meminno_rls` are bootstrapped once via
 //     Supabase's privileged channel (a role cannot create roles) — all four
@@ -202,7 +222,17 @@ export const notes = pgTable('notes', {
     for: 'all',
     to: ['authenticated', 'meminno_rls'],
     using: sql`(select public.meminno_current_user_id()) = user_id`,
-    withCheck: sql`(select public.meminno_current_user_id()) = user_id`,
+    // Tightened (issue #23): withCheck alone used to only assert
+    // `user_id = caller`, which does not stop a caller from claiming a row
+    // as their own while pointing document_id at another user's document -
+    // the FK resolves fine (Postgres FKs don't check ownership, and RLS is
+    // bypassed for FK referential-integrity checks by design). The EXISTS
+    // clause additionally requires the parent documents row to be visible
+    // to (i.e. owned by) the same caller. `using` is deliberately left
+    // unchanged - this only ever mattered for INSERT/UPDATE forgeries, not
+    // reads, since a flat `user_id = caller` check already fully scopes
+    // what a caller can SELECT/DELETE.
+    withCheck: sql`(select public.meminno_current_user_id()) = user_id AND EXISTS (SELECT 1 FROM public.documents d WHERE d.id = document_id AND d.user_id = (select public.meminno_current_user_id()))`,
   }),
 ]).enableRLS()
 
@@ -220,7 +250,9 @@ export const flashcards = pgTable('flashcards', {
     for: 'all',
     to: ['authenticated', 'meminno_rls'],
     using: sql`(select public.meminno_current_user_id()) = user_id`,
-    withCheck: sql`(select public.meminno_current_user_id()) = user_id`,
+    // Tightened (issue #23) - see notes_own_rows above for the full
+    // reasoning. Parent here is notes, via note_id.
+    withCheck: sql`(select public.meminno_current_user_id()) = user_id AND EXISTS (SELECT 1 FROM public.notes n WHERE n.id = note_id AND n.user_id = (select public.meminno_current_user_id()))`,
   }),
 ]).enableRLS()
 
@@ -245,7 +277,9 @@ export const quizzes = pgTable('quizzes', {
     for: 'all',
     to: ['authenticated', 'meminno_rls'],
     using: sql`(select public.meminno_current_user_id()) = user_id`,
-    withCheck: sql`(select public.meminno_current_user_id()) = user_id`,
+    // Tightened (issue #23) - see notes_own_rows above for the full
+    // reasoning. Parent here is notes, via note_id.
+    withCheck: sql`(select public.meminno_current_user_id()) = user_id AND EXISTS (SELECT 1 FROM public.notes n WHERE n.id = note_id AND n.user_id = (select public.meminno_current_user_id()))`,
   }),
 ]).enableRLS()
 
@@ -267,6 +301,8 @@ export const quizAttempts = pgTable('quiz_attempts', {
     for: 'all',
     to: ['authenticated', 'meminno_rls'],
     using: sql`(select public.meminno_current_user_id()) = user_id`,
-    withCheck: sql`(select public.meminno_current_user_id()) = user_id`,
+    // Tightened (issue #23) - see notes_own_rows above for the full
+    // reasoning. Parent here is quizzes, via quiz_id.
+    withCheck: sql`(select public.meminno_current_user_id()) = user_id AND EXISTS (SELECT 1 FROM public.quizzes q WHERE q.id = quiz_id AND q.user_id = (select public.meminno_current_user_id()))`,
   }),
 ]).enableRLS()
