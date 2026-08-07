@@ -7,7 +7,7 @@ import { buttonVariants } from '@/components/ui/button'
 import { DocumentWorkspace } from '@/components/document-workspace'
 
 export const metadata: Metadata = {
-  title: 'Document — Meminno',
+  title: 'Document | Meminno',
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i

@@ -87,7 +87,7 @@ export async function checkFlashcardsBurstLimit(userId: string): Promise<Flashca
     return {
       ok: false,
       status: 429,
-      reason: 'Too many flashcards-generation requests — please slow down and try again shortly.',
+      reason: 'Too many flashcards-generation requests, please slow down and try again shortly.',
     }
   }
   return { ok: true }
@@ -117,7 +117,7 @@ export async function claimFlashcardsBudget(userId: string, plan: string): Promi
 
   const withinPlatformCap = await claimDailyBudget('flashcards-generation', PLATFORM_DAILY_FLASHCARDS_CAP)
   if (!withinPlatformCap) {
-    return { ok: false, status: 429, reason: 'Meminno is experiencing high demand right now — please try again later.' }
+    return { ok: false, status: 429, reason: 'Meminno is experiencing high demand right now, please try again later.' }
   }
 
   return { ok: true }

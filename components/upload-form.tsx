@@ -53,14 +53,14 @@ export function UploadForm() {
         return
       }
       setStatus('success')
-      setMessage(`Saved "${body.document.title}" — ${body.document.rawText.length.toLocaleString()} characters.`)
+      setMessage(`Saved "${body.document.title}" (${body.document.rawText.length.toLocaleString()} characters).`)
       setDocumentId(body.document.id)
       setFile(null)
       setText('')
       setTitle('')
     } catch {
       setStatus('error')
-      setMessage('Network error — please try again.')
+      setMessage('Network error, please try again.')
     }
   }
 
@@ -69,7 +69,7 @@ export function UploadForm() {
       <Card>
         <CardHeader>
           <CardTitle>Upload your coursework</CardTitle>
-          <CardDescription>PDF or pasted text — Meminno reads it and stores it as a document.</CardDescription>
+          <CardDescription>PDF or pasted text. Meminno reads it and stores it as a document.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="mb-4 flex gap-2">

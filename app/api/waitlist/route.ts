@@ -36,7 +36,7 @@ export async function POST(req: Request) {
   const { success } = await limitStrict(`meminno-waitlist_${ip}`)
   if (!success) {
     logger.warn({ ip }, 'Waitlist signup rate limited')
-    return NextResponse.json({ error: 'Too many requests — try again in a bit.' }, { status: 429 })
+    return NextResponse.json({ error: 'Too many requests, try again in a bit.' }, { status: 429 })
   }
 
   let email: unknown
@@ -57,7 +57,7 @@ export async function POST(req: Request) {
     // product actually does. In practice UPSTASH_REDIS_REST_URL/TOKEN are
     // set in Vercel Production, so this only triggers in a misconfigured env.
     logger.warn('Upstash Redis is not configured — waitlist signup was not persisted')
-    return NextResponse.json({ error: 'Waitlist is temporarily unavailable — try again later.' }, { status: 503 })
+    return NextResponse.json({ error: 'Waitlist is temporarily unavailable, try again later.' }, { status: 503 })
   }
 
   const normalized = email.trim().toLowerCase()
@@ -70,7 +70,7 @@ export async function POST(req: Request) {
     const currentSize = await redis.scard(WAITLIST_KEY)
     if (currentSize >= MAX_WAITLIST_SIZE) {
       logger.error({ currentSize }, 'Waitlist set size cap reached — rejecting new signups')
-      return NextResponse.json({ error: 'Waitlist is temporarily full — try again later.' }, { status: 503 })
+      return NextResponse.json({ error: 'Waitlist is temporarily full, try again later.' }, { status: 503 })
     }
 
     // A Redis set, not a counter — repeat signups from the same email are
@@ -78,7 +78,7 @@ export async function POST(req: Request) {
     await redis.sadd(WAITLIST_KEY, normalized)
   } catch (error) {
     logger.error({ error }, 'Failed to persist waitlist signup')
-    return NextResponse.json({ error: 'Something went wrong — try again.' }, { status: 500 })
+    return NextResponse.json({ error: 'Something went wrong, try again.' }, { status: 500 })
   }
 
   logger.info({ action: 'waitlist_signup' }, 'New waitlist signup')

@@ -71,7 +71,7 @@ export function DocumentWorkspace({
       setNotesStage('idle')
     } catch {
       setNotesStage('error')
-      setNotesError('Network error — please try again.')
+      setNotesError('Network error, please try again.')
     }
   }
 
@@ -94,7 +94,7 @@ export function DocumentWorkspace({
       setFlashcardsStage('idle')
     } catch {
       setFlashcardsStage('error')
-      setFlashcardsError('Network error — please try again.')
+      setFlashcardsError('Network error, please try again.')
     }
   }
 
@@ -118,7 +118,7 @@ export function DocumentWorkspace({
       setQuizStage('idle')
     } catch {
       setQuizStage('error')
-      setQuizError('Network error — please try again.')
+      setQuizError('Network error, please try again.')
     }
   }
 
@@ -139,7 +139,7 @@ export function DocumentWorkspace({
         </div>
         {notesError ? <ErrorNote message={notesError} /> : null}
         {note ? <NotesView content={note.content} /> : notesStage !== 'loading' ? (
-          <EmptyStage text="No notes yet — generate study notes from this document's text." />
+          <EmptyStage text="No notes yet. Generate study notes from this document's text." />
         ) : null}
       </section>
 
@@ -165,7 +165,7 @@ export function DocumentWorkspace({
               ))}
             </div>
           ) : flashcardsStage !== 'loading' ? (
-            <EmptyStage text="No flashcards yet — generate a deck from your notes." />
+            <EmptyStage text="No flashcards yet. Generate a deck from your notes." />
           ) : null}
         </section>
       ) : null}
@@ -204,7 +204,7 @@ export function DocumentWorkspace({
               ))}
             </div>
           ) : quizStage !== 'loading' ? (
-            <EmptyStage text="No quiz yet — generate one from your notes and flashcards." />
+            <EmptyStage text="No quiz yet. Generate one from your notes and flashcards." />
           ) : null}
         </section>
       ) : null}

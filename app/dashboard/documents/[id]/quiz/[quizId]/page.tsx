@@ -7,7 +7,7 @@ import { buttonVariants } from '@/components/ui/button'
 import { QuizRunner } from '@/components/quiz-runner'
 
 export const metadata: Metadata = {
-  title: 'Take quiz — Meminno',
+  title: 'Take quiz | Meminno',
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i

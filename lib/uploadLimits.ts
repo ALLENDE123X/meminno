@@ -75,7 +75,7 @@ export async function checkBurstLimit(userId: string): Promise<UploadLimitResult
   // own rate-limit/budget keys in the same instance.
   const burst = await limitRequest(`meminno-upload-burst:${userId}`)
   if (!burst.success) {
-    return { ok: false, status: 429, reason: 'Too many upload requests — please slow down and try again shortly.' }
+    return { ok: false, status: 429, reason: 'Too many upload requests, please slow down and try again shortly.' }
   }
   return { ok: true }
 }
@@ -104,7 +104,7 @@ export async function claimUploadBudget(userId: string, plan: string): Promise<U
 
   const withinPlatformCap = await claimDailyBudget('document-upload', PLATFORM_DAILY_UPLOAD_CAP)
   if (!withinPlatformCap) {
-    return { ok: false, status: 429, reason: 'Meminno is experiencing high demand right now — please try again later.' }
+    return { ok: false, status: 429, reason: 'Meminno is experiencing high demand right now, please try again later.' }
   }
 
   return { ok: true }
