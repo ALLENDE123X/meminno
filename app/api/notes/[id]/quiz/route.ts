@@ -44,6 +44,23 @@ import { notes, flashcards, quizzes } from '@/lib/db/schema'
 // that nothing here blocks adding that flow later (each quiz already has a
 // stable `id`/`note_id`/`user_id` for a future `quiz_attempts` row to
 // reference) — actually building it is left to MEM-008.
+// Issue #24 (maxDuration audit, 2026-08-07): OPENAI_API_KEY is live and this
+// route is the one most exposed to a platform-level timeout - not only does
+// it make a real gpt-4o-mini call over notes + flashcards content, but
+// MEM-007-fix (issue #26) added a bounded retry-on-invalid_response, so a
+// single POST can now cost up to two real OpenAI calls. An undeclared
+// maxDuration both depends implicitly on a platform default that can change
+// and is far shorter than the openai SDK's own default per-call timeout
+// budget (10 minutes, retried), which compounds badly with this module's own
+// retry - see lib/quizGeneration.ts's OPENAI_TIMEOUT_MS/OPENAI_MAX_RETRIES
+// comment for the full worst-case math (up to ~80s for both attempts
+// combined). 120s covers that plus this route's own session/DB/Redis
+// overhead (session lookup, burst check, notes lookup, flashcards lookup,
+// budget claim, final insert) with real margin, while staying well under
+// Vercel's Hobby-plan Fluid Compute ceiling (300s as of this writing) so a
+// genuinely stuck function still gets killed well short of that.
+export const maxDuration = 120
+
 type QuizFailureReason = Exclude<GenerateQuizResult, { success: true }>['reason']
 
 const REASON_STATUS: Record<QuizFailureReason, number> = {

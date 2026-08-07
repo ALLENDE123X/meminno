@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { logger } from '@/lib/logger'
 
 const mockCreate = vi.fn()
+// Issue #24 (maxDuration audit): captures every `new OpenAI(...)`
+// constructor call's options so tests can assert the client-side
+// timeout/retry budget without needing a real slow/hung network call. Same
+// hoisting-safe pattern as `mockCreate` itself.
+const constructorCalls: Array<Record<string, unknown>> = []
 
 // Mirrors tests/unit/notesGeneration.test.ts's pattern for mocking a
 // class-based SDK client: the `openai` module's default export is a
@@ -10,6 +15,9 @@ const mockCreate = vi.fn()
 vi.mock('openai', () => ({
   default: class MockOpenAI {
     chat = { completions: { create: mockCreate } }
+    constructor(options: Record<string, unknown>) {
+      constructorCalls.push(options)
+    }
   },
 }))
 
@@ -98,6 +106,7 @@ describe('generateFlashcardsFromNotes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    constructorCalls.length = 0
     process.env.OPENAI_API_KEY = ORIGINAL_ENV
   })
 
@@ -232,6 +241,44 @@ describe('generateFlashcardsFromNotes', () => {
     const result = await generateFlashcardsFromNotes(VALID_NOTES_JSON)
     expect(result.success).toBe(false)
     if (!result.success) expect(result.reason).toBe('api_error')
+    expect(logger.error).toHaveBeenCalled()
+  })
+
+  // Issue #24 (maxDuration audit): the openai SDK's own defaults (10-minute
+  // timeout, 2 retries) are far longer than app/api/notes/[id]/flashcards/
+  // route.ts's 60s maxDuration, so a hung call needs to fail via this
+  // module's own typed api_error path well before the platform would ever
+  // kill the function. Pins that the client is actually constructed with a
+  // tight, explicit budget rather than relying on the SDK's defaults.
+  it('constructs the OpenAI client with an explicit request timeout and bounded retries', async () => {
+    process.env.OPENAI_API_KEY = 'test-key'
+    mockCreate.mockResolvedValueOnce(toolCallResponse({ cards: makeCards(8) }))
+
+    await generateFlashcardsFromNotes(VALID_NOTES_JSON)
+
+    expect(constructorCalls).toHaveLength(1)
+    expect(constructorCalls[0]).toMatchObject({ apiKey: 'test-key', timeout: 20_000, maxRetries: 1 })
+  })
+
+  // Simulates the exact scenario this ticket exists to fix: an upstream call
+  // that hangs/times out rather than erroring instantly. Without a
+  // client-side timeout this could hang for up to ~30 minutes (the SDK's own
+  // worst case); with one, it surfaces as a normal api_error rejection like
+  // any other network failure, and the route maps that to a clean 502
+  // instead of the platform killing the function opaquely.
+  it('degrades to the typed "api_error" result when the OpenAI call times out (simulating a hung upstream call)', async () => {
+    process.env.OPENAI_API_KEY = 'test-key'
+    const timeoutError = new Error('Request timed out.')
+    timeoutError.name = 'APIConnectionTimeoutError'
+    mockCreate.mockRejectedValueOnce(timeoutError)
+
+    const result = await generateFlashcardsFromNotes(VALID_NOTES_JSON)
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.reason).toBe('api_error')
+      expect(result.message).toMatch(/something went wrong/i)
+    }
     expect(logger.error).toHaveBeenCalled()
   })
 })
