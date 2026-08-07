@@ -65,7 +65,7 @@ export function QuizRunner({ quizId, questions, documentId }: { quizId: string; 
       setPhase('done')
     } catch {
       setPhase('error')
-      setError('Network error — please try again.')
+      setError('Network error, please try again.')
     }
   }
 

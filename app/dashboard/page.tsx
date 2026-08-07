@@ -6,7 +6,7 @@ import { buttonVariants } from '@/components/ui/button'
 import { Card, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 
 export const metadata: Metadata = {
-  title: 'Your library — Meminno',
+  title: 'Your library | Meminno',
   description: 'Every document you\'ve uploaded to Meminno, and where it is in the notes → flashcards → quiz pipeline.',
 }
 

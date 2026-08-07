@@ -13,7 +13,7 @@ export default function PrivacyPage() {
         <section className="space-y-4">
           <h2 className="text-2xl font-semibold">1. Where we are right now</h2>
           <p>
-            Meminno hasn&apos;t launched yet — the site you&apos;re on today is a waitlist landing page, not the
+            Meminno hasn&apos;t launched yet. The site you&apos;re on today is a waitlist landing page, not the
             product itself. Right now, the only thing we collect is the email address you give us if you join the
             waitlist. This policy will be expanded once the actual product (document upload, AI-generated notes,
             flashcards, quizzes, and account sign-in) goes live, and we&apos;ll update the date above whenever it
@@ -25,11 +25,11 @@ export default function PrivacyPage() {
           <h2 className="text-2xl font-semibold">2. Information we collect today</h2>
           <ul className="list-disc space-y-2 pl-6">
             <li>
-              <strong>Email address</strong> — if you submit the waitlist form, we store it so we can email you when
+              <strong>Email address.</strong> If you submit the waitlist form, we store it so we can email you when
               Meminno opens up.
             </li>
             <li>
-              <strong>Basic site analytics</strong> — aggregate page-visit data (page views, referring site, coarse
+              <strong>Basic site analytics.</strong> Aggregate page-visit data (page views, referring site, coarse
               device/browser/country) collected via Vercel Analytics. This does not use cookies or an
               individually-identifying profile.
             </li>
@@ -40,12 +40,12 @@ export default function PrivacyPage() {
         <section className="space-y-4">
           <h2 className="text-2xl font-semibold">3. What we&apos;ll collect once the product launches</h2>
           <p>
-            When Meminno actually launches, using the product will involve collecting more than an email address —
-            most notably, whatever coursework you choose to upload or paste (PDFs, pasted notes/text) so our AI
+            When Meminno actually launches, using the product will involve collecting more than an email address.
+            Most notably, whatever coursework you choose to upload or paste (PDFs, pasted notes/text) so our AI
             (via OpenAI) can generate notes, flashcards, and quizzes from it, plus account and billing information
             if you subscribe. We&apos;ll treat that content as sensitive, since it&apos;s your own coursework, and
             we&apos;ll update this policy with the specifics (retention, deletion, exactly which third-party
-            processors are involved) before that data collection actually begins — not after.
+            processors are involved) before that data collection begins, not after.
           </p>
         </section>
 
@@ -53,10 +53,10 @@ export default function PrivacyPage() {
           <h2 className="text-2xl font-semibold">4. Third-party services we use today</h2>
           <ul className="list-disc space-y-2 pl-6">
             <li>
-              <strong>Vercel</strong> — hosts this site and provides cookieless analytics.
+              <strong>Vercel.</strong> Hosts this site and provides cookieless analytics.
             </li>
             <li>
-              <strong>Upstash</strong> — stores waitlist email addresses (Redis).
+              <strong>Upstash.</strong> Stores waitlist email addresses (Redis).
             </li>
           </ul>
         </section>
@@ -64,7 +64,7 @@ export default function PrivacyPage() {
         <section className="space-y-4">
           <h2 className="text-2xl font-semibold">5. Your choices</h2>
           <p>
-            You can ask us to delete your email address from the waitlist at any time — just email us at the
+            You can ask us to delete your email address from the waitlist at any time. Just email us at the
             address below. We&apos;ll only use it to notify you about Meminno opening up; we don&apos;t send any
             other marketing messages.
           </p>

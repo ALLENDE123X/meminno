@@ -10,7 +10,7 @@ const FEATURES = [
   },
   {
     title: "Flashcards, built for you",
-    description: "Every set of notes turns into a ready-to-study flashcard deck — no manual card-making.",
+    description: "Every set of notes turns into a ready-to-study flashcard deck, already made for you.",
   },
   {
     title: "Quiz yourself instantly",
@@ -19,7 +19,7 @@ const FEATURES = [
   {
     title: "Your weekly stat card",
     description:
-      "A shareable card that sums up your week — cards reviewed, quizzes taken, streaks — so the work you put in is easy to actually see.",
+      "A shareable card that sums up your week (cards reviewed, quizzes taken, streaks), so the work you put in is easy to actually see.",
     badge: "New",
   },
 ];
@@ -28,7 +28,7 @@ const STEPS = [
   {
     step: "1",
     title: "Upload a PDF or paste your notes",
-    description: "Lecture slides, a textbook chapter, your own handwritten notes typed up — drop in whatever you've got.",
+    description: "Lecture slides, a textbook chapter, your own handwritten notes typed up. Drop in whatever you've got.",
   },
   {
     step: "2",
@@ -66,11 +66,11 @@ export default function Home() {
       {/* Hero */}
       <section className="mx-auto flex w-full max-w-3xl flex-col items-center px-6 py-16 text-center sm:py-24">
         <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">
-          Turn your coursework into notes, flashcards, and quizzes — automatically.
+          Turn your coursework into notes, flashcards, and quizzes, automatically.
         </h1>
         <p className="mt-6 max-w-xl text-lg text-zinc-600">
-          Upload a PDF or paste your notes. Meminno&apos;s AI does the rest — plus a shareable stat card that tracks
-          your study streak, so you can actually see the work paying off.
+          Upload a PDF or paste your notes, and Meminno&apos;s AI does the rest, plus builds a shareable stat card
+          that tracks your study streak, so you can actually see the work paying off.
         </p>
         <div id="waitlist" className="mt-10 w-full max-w-md scroll-mt-20">
           <WaitlistForm />
@@ -117,7 +117,7 @@ export default function Home() {
           ))}
         </div>
         <p className="mt-10 text-center text-sm text-zinc-500">
-          Live audio recording capture is on the roadmap — for now, upload a PDF or paste your text and you&apos;re set.
+          Live audio recording capture is on the roadmap. For now, upload a PDF or paste your text and you&apos;re set.
         </p>
       </section>
 
@@ -157,7 +157,7 @@ export default function Home() {
           <Card>
             <CardHeader>
               <CardTitle>Semester</CardTitle>
-              <CardDescription>Same as monthly, paid once per semester — the best per-month price.</CardDescription>
+              <CardDescription>Same as monthly, paid once per semester, at the best per-month price.</CardDescription>
             </CardHeader>
             <CardContent>
               <p className="text-3xl font-bold">
