@@ -22,6 +22,20 @@ import { documents, notes } from '@/lib/db/schema'
 // back to the caller (nicer for an immediate consumer than a raw JSON
 // string) — DB storage shape and API response shape are deliberately
 // decoupled here.
+// Issue #24 (maxDuration audit, 2026-08-07): OPENAI_API_KEY went live in
+// production during MEM-008, so this route now makes real gpt-4o-mini calls
+// over up to 60k characters of document text - with no maxDuration declared,
+// this ran on whatever Vercel's account-level default was, which is fragile
+// to depend on implicitly (it can change with plan/Fluid Compute settings)
+// and, worse, is far shorter than the openai SDK's own default per-call
+// timeout budget (10 minutes, retried) - see lib/notesGeneration.ts's
+// OPENAI_TIMEOUT_MS/OPENAI_MAX_RETRIES comment for the full worst-case math.
+// 60s covers that module's ~40s worst case (a single generate call, no
+// retry here - only lib/quizGeneration.ts retries) plus this route's own
+// session/DB/Redis overhead (session lookup, burst check, document lookup,
+// budget claim, final insert) with room to spare.
+export const maxDuration = 60
+
 type NotesFailureReason = Exclude<GenerateNotesResult, { success: true }>['reason']
 
 const REASON_STATUS: Record<NotesFailureReason, number> = {

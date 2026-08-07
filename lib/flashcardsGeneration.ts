@@ -123,6 +123,19 @@ const MAX_INPUT_CHARS = 60_000
 // sized assuming a low per-call cost.
 const MODEL = 'gpt-4o-mini'
 
+// Issue #24 (maxDuration audit, 2026-08-07) — same reasoning and same
+// values as lib/notesGeneration.ts's OPENAI_TIMEOUT_MS/OPENAI_MAX_RETRIES:
+// the openai SDK's own defaults (10-minute timeout, 2 retries per attempt)
+// mean an unconfigured client could hang for far longer than any sane
+// `maxDuration` on app/api/notes/[id]/flashcards/route.ts, so a hung call
+// would be killed opaquely by the platform instead of returning the typed
+// `api_error` result this module already handles. Worst case here is
+// OPENAI_MAX_RETRIES + 1 attempts x OPENAI_TIMEOUT_MS = 2 x 20s = 40s,
+// comfortably inside the route's 60s maxDuration alongside the
+// session/DB/Redis overhead around this call.
+const OPENAI_TIMEOUT_MS = 20_000
+const OPENAI_MAX_RETRIES = 1
+
 /**
  * Renders a notes row's `content` column into plain text suitable for the
  * flashcards prompt.
@@ -216,7 +229,7 @@ export async function generateFlashcardsFromNotes(notesContent: string): Promise
   const sourceText = rendered.length > MAX_INPUT_CHARS ? rendered.slice(0, MAX_INPUT_CHARS) : rendered
 
   try {
-    const client = new OpenAI({ apiKey })
+    const client = new OpenAI({ apiKey, timeout: OPENAI_TIMEOUT_MS, maxRetries: OPENAI_MAX_RETRIES })
     const completion = await client.chat.completions.create({
       model: MODEL,
       messages: [

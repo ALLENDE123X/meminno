@@ -23,6 +23,17 @@ import { notes, flashcards } from '@/lib/db/schema'
 //     as MEM-005's notes route; a later ticket can add one if the product
 //     needs it. Each generation still costs a day's quota (see
 //     lib/flashcardsLimits.ts).
+// Issue #24 (maxDuration audit, 2026-08-07) — same reasoning as
+// app/api/documents/[id]/notes/route.ts: OPENAI_API_KEY is live, this route
+// makes a real gpt-4o-mini call, and an undeclared maxDuration both depends
+// implicitly on a platform default that can change and is far shorter than
+// the openai SDK's own default per-call timeout budget (10 minutes,
+// retried) - see lib/flashcardsGeneration.ts's OPENAI_TIMEOUT_MS/
+// OPENAI_MAX_RETRIES comment for the full worst-case math. 60s covers that
+// module's ~40s worst case (a single generate call, no retry here) plus
+// this route's own session/DB/Redis overhead with room to spare.
+export const maxDuration = 60
+
 type FlashcardsFailureReason = Exclude<GenerateFlashcardsResult, { success: true }>['reason']
 
 const REASON_STATUS: Record<FlashcardsFailureReason, number> = {
