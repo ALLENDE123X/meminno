@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import type { Metadata } from 'next'
-import { createClient } from '@/lib/supabase/server'
+import { getSessionUser } from '@/lib/session'
 import { getWeeklyStats, buildStatCardImageUrl, buildStatCardShareUrl } from '@/lib/stats'
 import { StatCard } from '@/components/stat-card'
 import { CopyShareLinkButton } from '@/components/copy-share-link-button'
@@ -11,23 +11,23 @@ export const metadata: Metadata = {
   description: 'A shareable weekly recap of your Meminno study activity.',
 }
 
-// MEM-009. No dashboard shell/nav exists yet (that's MEM-003 scope, not
-// shipped) - this is reached directly by URL for now, which is all this
-// ticket needs ("this ticket doesn't need to build the full dashboard, just
-// this card/feature and a sensible route to view it").
+// MEM-009. No dashboard shell/nav exists yet - this is reached directly by
+// URL for now, which is all this ticket needs ("this ticket doesn't need to
+// build the full dashboard, just this card/feature and a sensible route to
+// view it").
 //
-// MEM-003 (Supabase Auth sign-up flow) also hasn't shipped, so most visitors
-// here won't have a session yet - that's handled explicitly below rather
-// than assuming a signed-in user, and a signed-in user with a `public.users`
-// row but zero documents/quizzes gets getWeeklyStats()'s real, honest empty
-// state (not a fabricated placeholder card).
+// Session check goes through lib/session.ts's getSessionUser() (MEM-003's
+// session-gate helper, merged after this ticket's first draft — reconciled
+// to use it instead of this page's original hand-rolled
+// createClient()/auth.getUser() call), for the same convention every other
+// protected route in this app now follows (see app/api/me/route.ts). A
+// signed-in user with a real public.users row but zero documents/quizzes
+// still gets getWeeklyStats()'s real, honest empty state, never a
+// fabricated placeholder card.
 export default async function WeeklyStatsPage() {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const session = await getSessionUser()
 
-  if (!user) {
+  if (!session.ok) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center gap-4 p-8 text-center">
         <h1 className="text-2xl font-semibold">Sign in to see your weekly stat card</h1>
@@ -35,14 +35,14 @@ export default async function WeeklyStatsPage() {
           Meminno turns your study activity — documents, flashcards, quizzes — into a shareable weekly recap.
           Sign in to see yours.
         </p>
-        <Link href="/" className={buttonVariants()}>
-          Back home
+        <Link href="/sign-in" className={buttonVariants()}>
+          Sign in
         </Link>
       </main>
     )
   }
 
-  const stats = await getWeeklyStats(user.id)
+  const stats = await getWeeklyStats(session.userId)
   // Two different URLs, deliberately: the download button wants the raw PNG
   // directly, while "copy share link" hands out the /share page instead —
   // pasting a bare image URL into iMessage/X/LinkedIn renders as a plain
