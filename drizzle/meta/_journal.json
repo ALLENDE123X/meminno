@@ -8,6 +8,13 @@
       "when": 1786061676008,
       "tag": "0000_mem-001-scaffold",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1786065537526,
+      "tag": "0001_mem-002-core-schema",
+      "breakpoints": true
     }
   ]
 }

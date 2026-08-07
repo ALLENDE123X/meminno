@@ -46,6 +46,74 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # MEM-002: lib/db/schema.ts's RLS policies grant to the `authenticated`
+      # role and reference `public.rls_current_user_id()` (a one-line proxy
+      # for `auth.uid()` - see schema.ts's header comment for why the
+      # migration can't reference `auth.uid()` directly), all real in the
+      # live Supabase project but absent from this vanilla postgres:17
+      # service container. Stub the minimum Supabase provides so
+      # `drizzle-kit migrate` (which includes CREATE POLICY/GRANT
+      # statements) succeeds here the same way it does against the real
+      # project, and so tests/integration/rls.test.ts can exercise real
+      # policy enforcement below. This step - not the migration files
+      # themselves - is where these get created, since the same migration
+      # also runs against the real project, which already has real (and must
+      # keep its real) versions of all of these. Unlike production, `test`
+      # (this container's DATABASE_URL role) is a superuser, so it can
+      # create all of this directly with no permission wrangling - the
+      # multi-step workaround documented in CLAUDE.md ("RLS gap" /
+      # `rls_current_user_id` sections) was only ever needed against the
+      # real project's non-superuser `meminno_app` role.
+      - name: Stub Supabase auth schema/roles for RLS testing
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          DO $do$
+          BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticated') THEN
+              CREATE ROLE authenticated NOLOGIN;
+            END IF;
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'anon') THEN
+              CREATE ROLE anon NOLOGIN;
+            END IF;
+          END
+          $do$;
+
+          CREATE SCHEMA IF NOT EXISTS auth;
+          CREATE TABLE IF NOT EXISTS auth.users (
+            id uuid PRIMARY KEY DEFAULT gen_random_uuid()
+          );
+
+          -- Matches the real project's auth schema grants (verified via
+          -- Supabase's execute_sql: `anon`/`authenticated` both have USAGE,
+          -- granted by supabase_admin) - without this, `authenticated`
+          -- evaluating a policy that calls public.rls_current_user_id()
+          -- (which calls auth.uid() internally) fails with "permission
+          -- denied for schema auth", caught by actually running this
+          -- suite's assertions against a local postgres:17 container before
+          -- trusting this step would work in CI.
+          GRANT USAGE ON SCHEMA auth TO authenticated, anon;
+
+          -- Matches the real auth.uid() definition on the live project
+          -- (verified via Supabase's execute_sql before writing this)
+          -- exactly, so a test that passes here behaves the same way there.
+          CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
+          LANGUAGE sql STABLE
+          AS $fn$
+            select
+            coalesce(
+              nullif(current_setting('request.jwt.claim.sub', true), ''),
+              (nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'sub')
+            )::uuid
+          $fn$;
+
+          -- Matches the real public.rls_current_user_id() definition
+          -- (bootstrapped once on the live project - see CLAUDE.md).
+          CREATE OR REPLACE FUNCTION public.rls_current_user_id() RETURNS uuid
+          LANGUAGE sql STABLE SECURITY INVOKER
+          SET search_path = ''
+          AS $fn$ SELECT auth.uid() $fn$;
+          SQL
+
       - name: Apply Drizzle migrations
         run: npx drizzle-kit migrate
 

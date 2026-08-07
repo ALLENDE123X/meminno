@@ -1,6 +1,6 @@
 # Meminno — Agent Operating Guide
 
-Combined architect + implementer for **Meminno**, as of 2026-08-06. This file is how you operate. There is no `PRD.md` or `ARCHITECTURE.md` yet — MEM-001 (repo + infra scaffold) is the first ticket; a real PRD and an `ARCHITECTURE.md` living record should be created as part of MEM-002 onward and read at the start of every session once they exist, the same way Propinno's session start reads `CLAUDE.md` → `PRD.md` → `ARCHITECTURE.md` in that order.
+Combined architect + implementer for **Meminno**, as of 2026-08-06. This file is how you operate. `ARCHITECTURE.md` now exists (created in MEM-002) — read it after this file, the same way Propinno's session start reads `CLAUDE.md` → `PRD.md` → `ARCHITECTURE.md` in that order. There is still no `PRD.md`; create one when a ticket's scope genuinely calls for it, don't force it before then.
 
 Whatever session reads this file (most likely Claude Code) is both the architect/PM **and** the implementer: it decides what to build next, implements it (directly or via subagents), and opens the PR.
 
@@ -70,9 +70,55 @@ Two more real gotchas hit while wiring this up, both worth knowing before assumi
 
 `meminno_app` is the role actually used in `DATABASE_URL` today (both in `.env.local` and in Vercel Production), not `postgres`.
 
-### Known gap from MEM-001: RLS is not yet enabled on any table
+### `auth` schema access for `meminno_app` — a real platform wall, not a missing GRANT (found + worked around during MEM-002)
 
-Supabase's advisor flagged (correctly) that both `public.health_checks` and `drizzle.__drizzle_migrations` currently have Row Level Security disabled, which means they're fully exposed to the `anon`/`authenticated` roles used by Supabase client libraries. This is low-risk right now (placeholder table, no real data), but **MEM-002, which defines the real schema, must add RLS policies to every table that holds user data as part of that same ticket, not as a follow-up.** Do not blanket-enable RLS with no policies as a quick fix either — that just blocks all access instead of scoping it correctly; design real policies per table.
+The first thing tried for MEM-002's RLS policies was the textbook Supabase+Drizzle pattern: `GRANT USAGE ON SCHEMA auth TO meminno_app` and `GRANT REFERENCES ON auth.users TO meminno_app` (and, for testing, `GRANT authenticated TO meminno_app` so a test could `SET ROLE authenticated`), all via `execute_sql`'s privileged channel the same way the `CREATE ROLE meminno_app` bootstrap above worked. **All three silently no-op**: each returns success with no error, even re-checked inside the same transaction via `has_schema_privilege`/`has_table_privilege`/`pg_has_role`, which come back `false` immediately after. This is Supabase's platform-level protection on the managed `auth` schema (and apparently on granting membership in its managed roles) — it doesn't error, it just doesn't take. Consequence: `meminno_app` can **never** author a `CREATE POLICY ... USING (auth.uid() = ...)` statement itself (fails migration-time with `permission denied for schema auth`), and can never carry a real FK to `auth.users.id` either, by any means available in this environment. Don't re-attempt these three GRANTs expecting a different result — re-verify with `has_schema_privilege`/`has_table_privilege` if you ever doubt this, don't trust a clean `execute_sql` return alone.
+
+**What actually works, both done once via `execute_sql`'s privileged channel (which itself connects as `postgres`, confirmed via `select current_user`) and BOTH verified to actually take effect:**
+
+```sql
+-- (1) Lets meminno_app bypass RLS directly, as a role ATTRIBUTE rather than
+-- via table ownership - unlike the auth-schema ACL/membership grants above,
+-- this is not an auth-schema operation at all, so it isn't subject to the
+-- same platform block. Confirmed via `select rolbypassrls from pg_roles
+-- where rolname='meminno_app'` -> true, immediately and persistently.
+ALTER ROLE meminno_app WITH BYPASSRLS;
+
+-- (2) A one-line SQL proxy for auth.uid(), living in `public` (a schema
+-- meminno_app already fully owns/controls), created by `postgres` (which
+-- DOES have real auth-schema USAGE) so meminno_app can reference it in its
+-- own CREATE POLICY statements from now on without ever touching `auth.*`
+-- directly. Every RLS policy in lib/db/schema.ts calls this, not
+-- auth.uid() - see that file's header comment for the full reasoning.
+-- `SET search_path = ''` is required (Supabase's linter flags its absence,
+-- WARN level, "function_search_path_mutable") even though the body already
+-- schema-qualifies auth.uid() - fixed during MEM-002 after first missing it.
+CREATE OR REPLACE FUNCTION public.rls_current_user_id() RETURNS uuid
+LANGUAGE sql STABLE SECURITY INVOKER
+SET search_path = ''
+AS $$ SELECT auth.uid() $$;
+```
+
+Both are idempotent one-time bootstrap actions against the live project, not part of any versioned migration (a migration running *as* `meminno_app` cannot grant itself a role attribute it doesn't have, or author a function/policy body referencing `auth.*` it can't see - same class of problem the `CREATE ROLE meminno_app` bootstrap above solved, and the reason `CREATE TABLE "auth"."users"` gets hand-deleted from `drizzle/0001_mem-002-core-schema.sql`'s generated output too). **If a fresh Supabase project is ever provisioned for this app, redo the `CREATE ROLE` block above, then both of these, in that order, before running `drizzle-kit migrate` for the first time against it** - any migration with an RLS policy will fail without step (2) already in place.
+
+### RLS gap from MEM-001 — corrected 2026-08-06 during MEM-002, read this before trusting the old wording anywhere else in history
+
+MEM-001's version of this section said `public.health_checks`/`drizzle.__drizzle_migrations` having RLS disabled meant they were "fully exposed to the `anon`/`authenticated` roles." **That had the risk backwards, verified independently during MEM-002 via `get_advisors` (real lints: `[]`, zero) and `has_table_privilege('anon'/'authenticated'/'service_role', 'public.health_checks', 'SELECT')` (all `false`, `relacl` is `NULL`).** The real finding: tables `meminno_app` creates get **zero** default grants for `anon`/`authenticated`/`service_role` — the opposite of exposed, they're totally inaccessible through PostgREST. Root cause: Supabase's own `ALTER DEFAULT PRIVILEGES` rows in `pg_default_acl` are keyed `defaclrole = postgres` / `supabase_admin` — they only fire for tables *those* roles create, and there's no equivalent entry `FOR ROLE meminno_app`. Deferring RLS on a placeholder table with no grants either way was harmless either way, so MEM-001's choice not to touch it was still right — just for a different reason than stated.
+
+**Practical consequence for every ticket from MEM-002 onward, not just a historical footnote:** since `meminno_app` (not `postgres`) is the role `drizzle-kit migrate` actually connects as, **every new table needs explicit `GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE "..." TO "authenticated";` statements added by hand to its migration** (drizzle-kit's schema diffing has no GRANT primitive, so these never get generated automatically) or `authenticated`/`anon` queries via `lib/supabase/client.ts`/`server.ts` will fail with a **blanket `permission denied for table ...`** — which looks exactly like a broken RLS policy but isn't one; it's a missing grant one layer below where RLS even gets evaluated. MEM-002's migration (`drizzle/0001_mem-002-core-schema.sql`) does this for all 6 new tables; copy that pattern rather than assuming a new table "just works" once its `pgPolicy`/`.enableRLS()` are in schema.ts.
+
+### `meminno_app` bypasses RLS entirely (table ownership AND now BYPASSRLS directly) — a deliberate, documented choice, not an oversight
+
+`meminno_app` — the role `DATABASE_URL` uses everywhere, both for migrations and for every server-side query `lib/db/index.ts` runs — **owns every table it creates**, and Postgres exempts a table's owner from that table's own RLS policies by default (`relforcerowsecurity = false`; this is standard Postgres behavior, not Supabase-specific). As of MEM-002 it **also** carries the `BYPASSRLS` role attribute directly (see the bootstrap section above — this was added as a side effect of working around the `auth`-schema access wall, not originally planned, but it's a strictly more robust version of the same guarantee: it holds even if a table's ownership ever changes, e.g. if some future object gets created via the `postgres`/privileged channel instead). Verified during MEM-002 (`rolbypassrls = true`, persists). Practical effect: **RLS policies on `users`/`documents`/`notes`/`flashcards`/`quizzes`/`quiz_attempts` do not restrict anything this app's own Drizzle-based route handlers do** — every one of those queries sees/writes every row regardless of policy, exactly as if RLS weren't enabled at all for this role.
+
+This was an explicit choice (option (a) below), not something to "fix" reflexively by adding `FORCE ROW LEVEL SECURITY`:
+
+- **(a) — chosen.** Trust the Drizzle-as-`meminno_app` path as the trusted server boundary (the same trust boundary Supabase's own `service_role` key sits at, which also carries `BYPASSRLS` rather than relying on ownership) and enforce per-user scoping in **application code** (`WHERE user_id = ...` on every query, derived from the authenticated session server-side, never from client-supplied input) on that path. RLS's actual job is defense-in-depth for the *other* access path: `lib/supabase/client.ts`/`server.ts`, which reach Postgres as `anon`/`authenticated` via PostgREST and have neither ownership nor `BYPASSRLS`, so RLS fully applies there. This is why MEM-002's policies are all scoped `to: 'authenticated'`, not written to constrain `meminno_app`.
+- **(b) — rejected for now.** `ALTER TABLE ... FORCE ROW LEVEL SECURITY` plus have the app connect as a non-owner, non-`BYPASSRLS` role for user-facing queries. Rejected because it would require restructuring `lib/db/index.ts`'s single-role connection model for no functional gain today (nothing currently queries these tables except this app's own trusted server code), and would need every Drizzle call site to additionally set a per-request `auth.uid()`-equivalent session GUC to keep working at all. Revisit if/when a genuinely untrusted caller gets a path to the Drizzle connection directly (not just via `anon`/`authenticated` PostgREST, which is already covered).
+
+If a future ticket adds a code path that queries via `@supabase/ssr`'s browser/server client (not raw Drizzle), that path already gets real per-row isolation from the policies MEM-002 shipped — no further wiring needed. If it queries via Drizzle, isolation is on that ticket's author to get right in the `WHERE` clause; RLS will not catch a missing one.
+
+`tests/integration/rls.test.ts` proves the policies genuinely enforce isolation by connecting, `SET LOCAL ROLE authenticated` inside a transaction, and spoofing `request.jwt.claim.sub` per user - the same effective identity a real PostgREST request would have. `SET ROLE` to a role you're not a member of normally requires superuser, and `meminno_app` can't be granted membership in `authenticated` either (same platform wall as above - yet another membership/ACL-adjacent grant into Supabase-managed territory that silently no-ops). CI's `test` role IS superuser, so the full test runs there; against production, the test's `beforeAll` fails earlier and more simply (`meminno_app` has no `INSERT` on `auth.users`, needed to create disposable fake users) and skips itself gracefully rather than reaching the `SET ROLE` step at all. See the test file's header comment for the full reasoning and why this is fine (CI, not production, is this repo's disposable/adversarial-testing database).
 
 ## Credential-reuse map
 
