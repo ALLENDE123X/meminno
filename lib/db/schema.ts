@@ -16,50 +16,63 @@
 // `anon`/`authenticated` PostgREST roles, so RLS is the only thing standing
 // between one user's coursework and another's if that path is ever used.
 //
-// RLS design (see CLAUDE.md's "RLS gap"/"Table ownership" sections for the
-// full writeup, including the two real platform constraints discovered
-// while building this and verified against the live project):
-//   - Every table below is created by (and owned by) the `meminno_app` role
-//     that `drizzle-kit migrate` connects as. Postgres exempts a table's
-//     OWNER from its own RLS policies by default - so `meminno_app`, the
-//     server-side Drizzle connection every route in this app actually
-//     queries through, keeps working exactly as before, unaffected by any
-//     policy below (this repo's real safety net for that path is `meminno_app`
-//     now also carrying the BYPASSRLS role attribute directly - see
-//     CLAUDE.md - so this holds even if a table's ownership ever changes).
-//     This mirrors the trust boundary Supabase's own `service_role` key
-//     sits at: server-side code has already authenticated the request and
-//     scoped it to the right user in application code before it ever
-//     reaches Drizzle.
-//   - RLS therefore exists to constrain the OTHER path: `authenticated`
-//     (Supabase's built-in PostgREST role, used by `@supabase/ssr`'s
-//     browser/server clients via the anon key + a user's JWT) gets an
-//     explicit `FOR ALL` policy on every table, scoped to the caller's own
-//     identity. No policy is granted to `anon` (unauthenticated) - RLS
+// RLS design (see CLAUDE.md's "Two-role database architecture" section for
+// the full writeup, including the platform constraints discovered while
+// building this and verified against the live project):
+//   - TWO Postgres roles, deliberately split (MEM-002-fix, issue #14):
+//     `meminno_app` OWNS every table below and is the MIGRATION/OPS role
+//     only - it is never what the running app connects as. `meminno_rls`
+//     is the RUNTIME role: it owns nothing, holds only explicit per-table
+//     SELECT/INSERT/UPDATE/DELETE grants, and carries NO `BYPASSRLS`
+//     attribute, so every policy below genuinely applies to it. `DATABASE_URL`
+//     (what `lib/db/index.ts` connects with) is `meminno_rls`;
+//     `MIGRATION_DATABASE_URL` (what `drizzle-kit` connects with) is
+//     `meminno_app`.
+//   - Every table below is additionally `ALTER TABLE ... FORCE ROW LEVEL
+//     SECURITY` (see drizzle/0002_mem-002-fix-forced-rls.sql - drizzle-kit
+//     has no primitive for it, so it is hand-written). Without FORCE,
+//     Postgres exempts a table's OWNER from its own policies, which would
+//     leave `meminno_app` unrestricted. With FORCE and no policy naming it,
+//     `meminno_app` can run DDL but cannot read or write a single row of
+//     user data - migrations still work (DDL is not row-level), but there
+//     is no unrestricted data path left in the app's own credentials.
+//   - WHY THE ORIGINAL MEM-002 APPROACH WAS WRONG, so nobody re-invents it:
+//     the first cut of this ticket ran `ALTER ROLE meminno_app WITH
+//     BYPASSRLS` against live production, and the app connected as that
+//     same role. That made every policy in this file decorative - the one
+//     connection the entire app actually uses ignored all of them, so a
+//     single missing `WHERE user_id = ...` in any future route would have
+//     silently served one user another user's coursework, with RLS unable
+//     to catch it. "The server is trusted so it may bypass RLS" is only
+//     defensible when something else enforces isolation; here nothing did.
+//     `BYPASSRLS` has been reverted (`NOBYPASSRLS`, verified via
+//     `pg_roles.rolbypassrls = false`) and must not be re-granted.
+//   - `authenticated` (Supabase's built-in PostgREST role, used by
+//     `@supabase/ssr`'s browser/server clients via the anon key + a user's
+//     JWT) keeps its own `FOR ALL` policy on every table, scoped the same
+//     way. No policy is granted to `anon` (unauthenticated) - RLS
 //     default-denies everything not matched by a policy, so anonymous
 //     callers see nothing.
-//   - Every policy's `using`/`withCheck` calls `public.rls_current_user_id()`,
-//     NOT `auth.uid()` directly, even though that's the standard Supabase
-//     idiom. Reason, verified against the live project: `meminno_app` can
-//     never be granted USAGE on the `auth` schema by ANY means available
-//     here (including the privileged execute_sql channel normally used to
-//     bootstrap this role) - Supabase's platform-level protection on the
-//     managed `auth` schema silently no-ops ACL grants into it rather than
-//     erroring. Without schema USAGE, `meminno_app` cannot even author a
-//     `CREATE POLICY ... USING (auth.uid() = ...)` statement itself
-//     ("permission denied for schema auth" at migration time), which would
-//     otherwise force every future migration through a privileged
-//     out-of-band channel instead of the normal `drizzle-kit migrate`
-//     pipeline. `public.rls_current_user_id()` is a one-line SQL proxy for
-//     `auth.uid()`, created ONCE via that privileged channel (a role that
-//     already has `auth` schema USAGE - not part of any versioned
-//     migration, same treatment as the `meminno_app` role bootstrap itself;
-//     see CLAUDE.md), living in `public`, a schema `meminno_app` already
-//     fully owns - so every migration from here on can freely reference it.
-//     Functions grant EXECUTE to PUBLIC by default, and this one is a plain
-//     (not SECURITY DEFINER) wrapper, so `authenticated` evaluating a policy
-//     at runtime still runs `auth.uid()` under its own already-real
-//     `auth`-schema access, same as if the policy called it directly.
+//   - Every policy's `using`/`withCheck` calls
+//     `public.meminno_current_user_id()`, NOT `auth.uid()` directly, even
+//     though that's the standard Supabase idiom, and NOT MEM-002's original
+//     `public.rls_current_user_id()` proxy either. Two reasons, both
+//     verified against the live project: (1) `meminno_app` can never be
+//     granted USAGE on the `auth` schema by ANY means available here -
+//     Supabase's platform-level protection on the managed `auth` schema
+//     silently no-ops ACL grants into it rather than erroring - so it
+//     cannot author a `CREATE POLICY ... USING (auth.uid() = ...)`
+//     statement itself ("permission denied for schema auth" at migration
+//     time); (2) the original proxy was `SECURITY INVOKER` and called
+//     `auth.uid()` internally, so `meminno_rls` (which likewise cannot get
+//     `auth` USAGE) could not evaluate it at all. The replacement reads the
+//     same session GUCs `auth.uid()` itself reads, with zero `auth.*`
+//     references, so it works identically for both roles: PostgREST sets
+//     `request.jwt.claim.sub`/`request.jwt.claims` for `authenticated`, and
+//     `lib/db/index.ts`'s `withUserContext()` sets `app.current_user_id`
+//     for `meminno_rls`. It lives in `public` (a schema `meminno_app` has
+//     CREATE on) and is created by an ordinary versioned migration - no
+//     out-of-band privileged bootstrap needed for it, unlike the old proxy.
 //   - `user_id` is denormalized onto notes/flashcards/quizzes/quiz_attempts
 //     (not derived by joining back through document_id/note_id/quiz_id) so
 //     every policy is a flat `user_id = <caller's own id>` check, no
@@ -73,29 +86,41 @@
 //     hardening pass if that assumption turns out not to hold once MEM-005+
 //     ships real writes.
 //   - `authenticated`/`anon` are Supabase-managed roles this migration never
-//     creates — they already exist in the real project. CI's ephemeral
-//     Postgres has no Supabase install at all, so `.github/workflows/ci.yml`
-//     stubs both roles plus `auth.users`/`auth.uid()`/
+//     creates, and `meminno_app`/`meminno_rls` are bootstrapped once via
+//     Supabase's privileged channel (a role cannot create roles) — all four
+//     already exist in the real project. CI's ephemeral Postgres has no
+//     Supabase install at all, so `.github/workflows/ci.yml` creates all
+//     four roles plus `auth.users`/`auth.uid()`/
 //     `public.rls_current_user_id()` in a step that runs BEFORE
 //     `drizzle-kit migrate` (never inside a migration file itself, since
 //     that same file also runs against the real Supabase project, which
 //     already has real versions of all of these — redefining them there
-//     would be catastrophic).
+//     would be catastrophic). CI deliberately migrates as a non-superuser
+//     `meminno_app` and runs the app/test connection as `meminno_rls`, so
+//     it reproduces production's exact privilege split rather than doing
+//     everything as one superuser.
 import { pgTable, pgPolicy, uuid, text, timestamp, integer, jsonb, index } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
+
+// Every policy below is `to: ['authenticated', 'meminno_rls']`.
+// `meminno_rls` is the app's runtime connection (lib/db/index.ts);
+// `authenticated` is Supabase's PostgREST role (lib/supabase/client.ts /
+// server.ts). `meminno_app`, the owner/migration role, is deliberately
+// absent from every policy — FORCE ROW LEVEL SECURITY plus no policy naming
+// it is exactly what makes it unable to touch a single row of user data.
 
 export const healthChecks = pgTable('health_checks', {
   id: uuid('id').defaultRandom().primaryKey(),
   note: text('note').notNull().default('MEM-001 scaffold'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 })
-// No user data, no legitimate authenticated/anon consumer (pure ops/CI
-// table) - enabling RLS with zero policies is itself the correct fix here,
-// not a stopgap: it satisfies Supabase's advisor (previously flagged this
-// exact table as RLS-disabled) while changing nothing functionally, since
-// `meminno_app` (the only role that ever touches it) bypasses RLS
-// regardless of policies (owner, and now also BYPASSRLS directly - see
-// CLAUDE.md). See CLAUDE.md's "RLS gap" section for the full history.
+// No user data, no legitimate consumer at all (pure ops/CI table, nothing
+// in app/ reads it) - enabling RLS with zero policies is itself the correct
+// fix here, not a stopgap: it satisfies Supabase's advisor (previously
+// flagged this exact table as RLS-disabled) and default-denies every role.
+// Deliberately NOT `FORCE`d, unlike the six user tables below: it holds no
+// user data, and leaving the owner (`meminno_app`) able to read it keeps a
+// trivial ops/debug path open on a table where that carries no risk.
 .enableRLS()
 
 export const users = pgTable('users', {
@@ -131,9 +156,9 @@ export const users = pgTable('users', {
   index('users_stripe_subscription_id_idx').on(table.stripeSubscriptionId),
   pgPolicy('users_own_row', {
     for: 'all',
-    to: 'authenticated',
-    using: sql`(select public.rls_current_user_id()) = id`,
-    withCheck: sql`(select public.rls_current_user_id()) = id`,
+    to: ['authenticated', 'meminno_rls'],
+    using: sql`(select public.meminno_current_user_id()) = id`,
+    withCheck: sql`(select public.meminno_current_user_id()) = id`,
   }),
 ]).enableRLS()
 
@@ -156,9 +181,9 @@ export const documents = pgTable('documents', {
   index('documents_user_id_idx').on(table.userId),
   pgPolicy('documents_own_rows', {
     for: 'all',
-    to: 'authenticated',
-    using: sql`(select public.rls_current_user_id()) = user_id`,
-    withCheck: sql`(select public.rls_current_user_id()) = user_id`,
+    to: ['authenticated', 'meminno_rls'],
+    using: sql`(select public.meminno_current_user_id()) = user_id`,
+    withCheck: sql`(select public.meminno_current_user_id()) = user_id`,
   }),
 ]).enableRLS()
 
@@ -175,9 +200,9 @@ export const notes = pgTable('notes', {
   index('notes_user_id_idx').on(table.userId),
   pgPolicy('notes_own_rows', {
     for: 'all',
-    to: 'authenticated',
-    using: sql`(select public.rls_current_user_id()) = user_id`,
-    withCheck: sql`(select public.rls_current_user_id()) = user_id`,
+    to: ['authenticated', 'meminno_rls'],
+    using: sql`(select public.meminno_current_user_id()) = user_id`,
+    withCheck: sql`(select public.meminno_current_user_id()) = user_id`,
   }),
 ]).enableRLS()
 
@@ -193,9 +218,9 @@ export const flashcards = pgTable('flashcards', {
   index('flashcards_user_id_idx').on(table.userId),
   pgPolicy('flashcards_own_rows', {
     for: 'all',
-    to: 'authenticated',
-    using: sql`(select public.rls_current_user_id()) = user_id`,
-    withCheck: sql`(select public.rls_current_user_id()) = user_id`,
+    to: ['authenticated', 'meminno_rls'],
+    using: sql`(select public.meminno_current_user_id()) = user_id`,
+    withCheck: sql`(select public.meminno_current_user_id()) = user_id`,
   }),
 ]).enableRLS()
 
@@ -214,9 +239,9 @@ export const quizzes = pgTable('quizzes', {
   index('quizzes_user_id_idx').on(table.userId),
   pgPolicy('quizzes_own_rows', {
     for: 'all',
-    to: 'authenticated',
-    using: sql`(select public.rls_current_user_id()) = user_id`,
-    withCheck: sql`(select public.rls_current_user_id()) = user_id`,
+    to: ['authenticated', 'meminno_rls'],
+    using: sql`(select public.meminno_current_user_id()) = user_id`,
+    withCheck: sql`(select public.meminno_current_user_id()) = user_id`,
   }),
 ]).enableRLS()
 
@@ -236,8 +261,8 @@ export const quizAttempts = pgTable('quiz_attempts', {
   index('quiz_attempts_user_id_idx').on(table.userId),
   pgPolicy('quiz_attempts_own_rows', {
     for: 'all',
-    to: 'authenticated',
-    using: sql`(select public.rls_current_user_id()) = user_id`,
-    withCheck: sql`(select public.rls_current_user_id()) = user_id`,
+    to: ['authenticated', 'meminno_rls'],
+    using: sql`(select public.meminno_current_user_id()) = user_id`,
+    withCheck: sql`(select public.meminno_current_user_id()) = user_id`,
   }),
 ]).enableRLS()

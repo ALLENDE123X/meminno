@@ -15,6 +15,13 @@
       "when": 1786065537526,
       "tag": "0001_mem-002-core-schema",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786067555192,
+      "tag": "0002_mem-002-fix-forced-rls",
+      "breakpoints": true
     }
   ]
 }

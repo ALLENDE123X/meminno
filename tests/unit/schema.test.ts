@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { getTableConfig } from 'drizzle-orm/pg-core'
+import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core'
+import type { SQL } from 'drizzle-orm'
 import {
   users,
   documents,
@@ -17,19 +18,39 @@ import {
 // `.enableRLS()` or `pgPolicy(...)` before it ever reaches a real database.
 describe('schema RLS wiring (lib/db/schema.ts)', () => {
   const userTables = { users, documents, notes, flashcards, quizzes, quizAttempts }
+  const dialect = new PgDialect()
+  const render = (expr: SQL | undefined) => dialect.sqlToQuery(expr!).sql
 
-  it.each(Object.entries(userTables))('%s has RLS enabled with exactly one authenticated-scoped policy', (_name, table) => {
+  it.each(Object.entries(userTables))('%s has RLS enabled with exactly one identity-scoped policy', (_name, table) => {
     const config = getTableConfig(table)
     expect(config.enableRLS).toBe(true)
     expect(config.policies).toHaveLength(1)
     expect(config.policies[0].for).toBe('all')
-    expect(config.policies[0].to).toBe('authenticated')
-    // Every policy must scope by identity (auth.uid()), not leave using/
-    // withCheck unset (an unset `using` on a permissive policy defaults to
-    // allowing everything - the one mistake that would make a policy
-    // present but silently do nothing).
+    // Both real access paths, and ONLY those: `authenticated` (Supabase
+    // PostgREST) and `meminno_rls` (the app's runtime connection). The
+    // table-owning `meminno_app` migration role must never appear here -
+    // that plus FORCE ROW LEVEL SECURITY is what keeps it unable to read
+    // user data (MEM-002-fix, issue #14).
+    expect(config.policies[0].to).toEqual(['authenticated', 'meminno_rls'])
+    // Every policy must scope by identity, not leave using/withCheck unset
+    // (an unset `using` on a permissive policy defaults to allowing
+    // everything - the one mistake that would make a policy present but
+    // silently do nothing).
     expect(config.policies[0].using).toBeDefined()
     expect(config.policies[0].withCheck).toBeDefined()
+  })
+
+  it.each(Object.entries(userTables))('%s scopes by public.meminno_current_user_id(), never the retired auth-schema proxy', (_name, table) => {
+    const policy = getTableConfig(table).policies[0]
+    for (const expr of [render(policy.using), render(policy.withCheck)]) {
+      expect(expr).toContain('public.meminno_current_user_id()')
+      // The MEM-002 proxy was SECURITY INVOKER over auth.uid(), so only a
+      // role with `auth` schema USAGE could evaluate it - which the runtime
+      // role can never be granted. A policy that regressed to it would
+      // default-deny every app query.
+      expect(expr).not.toContain('rls_current_user_id')
+      expect(expr).not.toContain('auth.uid')
+    }
   })
 
   it('health_checks has RLS enabled with zero policies (default-deny, no user-data consumer - see CLAUDE.md)', () => {

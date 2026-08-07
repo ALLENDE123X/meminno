@@ -25,7 +25,19 @@ jobs:
           --health-retries 5
 
     env:
-      DATABASE_URL: postgres://test:test@localhost:5432/meminno_test
+      # MEM-002-fix (issue #14): CI reproduces production's two-role split
+      # rather than doing everything as one superuser, so the RLS assertions
+      # in tests/integration/rls.test.ts prove the same thing here that they
+      # would there. Passwords are throwaway values for an ephemeral
+      # localhost container, not secrets.
+      #
+      # Runtime/app role — owns nothing, RLS fully applies (mirrors meminno_rls).
+      DATABASE_URL: postgres://meminno_rls:ci_rls_pw@localhost:5432/meminno_test
+      # Table-owning migration role — NOT a superuser (mirrors meminno_app).
+      MIGRATION_DATABASE_URL: postgres://meminno_app:ci_app_pw@localhost:5432/meminno_test
+      # Container superuser — used only by the bootstrap step below, which
+      # stands in for the one-time privileged Supabase bootstrap in prod.
+      ADMIN_DATABASE_URL: postgres://test:test@localhost:5432/meminno_test
       NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
       NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder-anon-key
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -46,27 +58,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # MEM-002: lib/db/schema.ts's RLS policies grant to the `authenticated`
-      # role and reference `public.rls_current_user_id()` (a one-line proxy
-      # for `auth.uid()` - see schema.ts's header comment for why the
-      # migration can't reference `auth.uid()` directly), all real in the
-      # live Supabase project but absent from this vanilla postgres:17
-      # service container. Stub the minimum Supabase provides so
-      # `drizzle-kit migrate` (which includes CREATE POLICY/GRANT
-      # statements) succeeds here the same way it does against the real
-      # project, and so tests/integration/rls.test.ts can exercise real
-      # policy enforcement below. This step - not the migration files
-      # themselves - is where these get created, since the same migration
-      # also runs against the real project, which already has real (and must
-      # keep its real) versions of all of these. Unlike production, `test`
-      # (this container's DATABASE_URL role) is a superuser, so it can
-      # create all of this directly with no permission wrangling - the
-      # multi-step workaround documented in CLAUDE.md ("RLS gap" /
-      # `rls_current_user_id` sections) was only ever needed against the
-      # real project's non-superuser `meminno_app` role.
-      - name: Stub Supabase auth schema/roles for RLS testing
+      # MEM-002 / MEM-002-fix: the migrations reference four roles
+      # (`authenticated`, `anon`, `meminno_app`, `meminno_rls`), an `auth`
+      # schema, and `public.rls_current_user_id()` - all real in the live
+      # Supabase project but absent from this vanilla postgres:17 service
+      # container. This step stands in for the one-time privileged bootstrap
+      # that CREATE ROLE and the `auth` stubs get in production (a role
+      # cannot create roles or reach into `auth` itself; see CLAUDE.md's
+      # "Two-role database architecture" section for the production
+      # equivalent). It deliberately does NOT do everything as the container
+      # superuser: `meminno_app` is created NOSUPERUSER and granted exactly
+      # what MEM-001's production block granted it, so `drizzle-kit migrate`
+      # exercises the same privilege envelope it has against the real
+      # project, and `FORCE ROW LEVEL SECURITY` is genuinely observable in
+      # tests (a superuser would bypass RLS unconditionally and the
+      # isolation assertions would prove nothing). This must never move into
+      # a migration file - the same files run against the real project,
+      # which already has real versions of all of this.
+      - name: Bootstrap roles + Supabase auth stubs (stands in for prod's privileged bootstrap)
         run: |
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          psql "$ADMIN_DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
           DO $do$
           BEGIN
             IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticated') THEN
@@ -75,8 +86,22 @@ jobs:
             IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'anon') THEN
               CREATE ROLE anon NOLOGIN;
             END IF;
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'meminno_app') THEN
+              CREATE ROLE meminno_app WITH LOGIN PASSWORD 'ci_app_pw'
+                NOSUPERUSER NOCREATEROLE NOBYPASSRLS INHERIT;
+            END IF;
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'meminno_rls') THEN
+              CREATE ROLE meminno_rls WITH LOGIN PASSWORD 'ci_rls_pw'
+                NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS INHERIT;
+            END IF;
           END
           $do$;
+
+          -- Mirrors MEM-001's production CREATE ROLE block for meminno_app
+          -- (see CLAUDE.md). CREATE ON DATABASE is what drizzle-kit's own
+          -- `CREATE SCHEMA "drizzle"` tracking table needs.
+          GRANT ALL ON SCHEMA public TO meminno_app;
+          GRANT CREATE ON DATABASE meminno_test TO meminno_app;
 
           CREATE SCHEMA IF NOT EXISTS auth;
           CREATE TABLE IF NOT EXISTS auth.users (
@@ -107,7 +132,12 @@ jobs:
           $fn$;
 
           -- Matches the real public.rls_current_user_id() definition
-          -- (bootstrapped once on the live project - see CLAUDE.md).
+          -- (bootstrapped once on the live project - see CLAUDE.md). LEGACY:
+          -- nothing references it any more after MEM-002-fix replaced it
+          -- with public.meminno_current_user_id() (created by migration
+          -- 0002, no bootstrap needed). It stays here only so migration
+          -- 0001 - which still contains the original CREATE POLICY
+          -- statements - can be replayed from scratch.
           CREATE OR REPLACE FUNCTION public.rls_current_user_id() RETURNS uuid
           LANGUAGE sql STABLE SECURITY INVOKER
           SET search_path = ''
