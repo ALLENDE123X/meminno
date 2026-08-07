@@ -1,10 +1,46 @@
 # Meminno — Architecture
 
-Living record of what's actually built, as of MEM-002 + MEM-002-fix (2026-08-06). This is the first version of this file — MEM-001 (repo scaffold) didn't create one; read `CLAUDE.md` first (operating guide, hard stops, ticket priority), then this. There is no `PRD.md` yet.
+Living record of what's actually built, as of MEM-003 (2026-08-06/07). Read `CLAUDE.md` first (operating guide, hard stops, ticket priority), then this. There is no `PRD.md` yet.
 
 ## Stack
 
 Next.js 16 (App Router, TypeScript, Turbopack) · Drizzle ORM (`drizzle-orm` + `postgres.js`) · Supabase (Postgres + Auth) · Upstash Redis (rate limiting + AI budget caps, shared with Propinno under a `meminno-` key prefix) · Stripe (not yet wired) · OpenAI (not yet wired) · Vercel · GitHub Actions CI.
+
+## Auth (`lib/session.ts`, MEM-003)
+
+**Flow: magic link (passwordless email OTP), not email/password.** No password field means no reset flow and no password storage/breach surface, and "click one link" is the lowest-friction option for a college-student audience signing up between classes. Uses Supabase Auth's PKCE flow (the `@supabase/ssr` default) rather than the older implicit flow.
+
+- `app/sign-in/page.tsx` — client component. Collects an email, calls `supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: '<origin>/auth/callback' } })` via `lib/supabase/client.ts`. On a brand-new email this sends Supabase's "Confirm your email" signup template; on a returning email it sends the magic-link template — both resolve through the same callback route.
+- `app/auth/callback/route.ts` — the `emailRedirectTo` target. Exchanges the `?code=` PKCE param for a session (`supabase.auth.exchangeCodeForSession`, using the code verifier `signInWithOtp` stored in a cookie on the same browser), then calls `getSessionUser()` (which also creates the `public.users` row - see below) before redirecting to `next` (default `/`). Redirects to `/sign-in?error=auth` on any failure.
+- `proxy.ts` (Next.js 16's renamed `middleware.ts` convention - see https://nextjs.org/docs/messages/middleware-to-proxy) — refreshes the Supabase session cookie on every request via `supabase.auth.getUser()`. Required because Server Components can read but not write cookies; without this, a token nearing expiry would stay stale until something else happened to set cookies.
+- `lib/session.ts` — `getSessionUser()`, the session-gate helper this ticket's brief asked for, mirroring Propinno's `lib/session.ts` discriminated-union pattern (`{ok:true,userId}|{ok:false,status:401|403}`) adapted from Propinno's phone/cookie check to Supabase Auth. Uses `supabase.auth.getUser()` (validates the token against Supabase Auth's server), never `getSession()` (decodes an unverified cookie). **403 is reserved, not currently reachable** — Propinno's 403 means "real session, not an active paying subscriber"; Meminno has no such concept yet (billing is a later ticket). Kept in the type now so callers already handle it.
+- `app/api/me/route.ts` — the first real protected route. `GET` returns the caller's own `{id, email, plan}` row (via `withUserContext`) or 401; `DELETE` signs out (`supabase.auth.signOut()`) or 401. Doubles as this ticket's concrete verification target for "does a protected route really 401 when unauthenticated."
+
+### `public.users` row creation — the `auth.users` ↔ `public.users` link is application-level, not a DB FK
+
+Per `lib/db/schema.ts`'s header comment (MEM-002), `public.users.id` matches `auth.users.id` **by convention only** — no DB-level FK is possible (`meminno_app` can never get `REFERENCES` on `auth.users`, the same `auth`-schema platform wall as everywhere else in this codebase). `getSessionUser()`'s private `ensureUserRow(userId, email)` is what upholds that invariant: on **every** successful session resolution (not just a one-time signup step), it runs `withUserContext(userId, tx => tx.insert(users).values({id: userId, email}).onConflictDoNothing())`. Idempotent by design — a second concurrent call for the same brand-new account (e.g. two tabs completing the callback at once) races safely instead of throwing a duplicate-key error. The insert's `withCheck` (`meminno_current_user_id() = id`) only passes because `withUserContext` sets the transaction's identity GUC to the same id being inserted.
+
+### Live end-to-end verification (2026-08-07, against the real `hlaeqvuyapkvixwaqxcs` project)
+
+Verified against the actual live Supabase project, not mocked, using disposable Gmail `+`-tagged test addresses (`pranavlende123+mem003test@gmail.com`, `pranavlende123+mem003script@gmail.com` — mirrors the `mem010-review-fix-verify@example.com` precedent from MEM-010's own live verification):
+
+1. Drove the real `/sign-in` form once through a real browser session (real `signInWithOtp` call, real confirmation email sent by Supabase).
+2. When the sandboxed browser tool became unable to complete cross-origin navigation mid-session, switched to an equally-real but scriptable path: used `@supabase/ssr`'s own `createServerClient` with an in-memory cookie jar to call `signInWithOtp` directly (capturing the real PKCE code-verifier cookies it generates), fetched the resulting confirmation email via the Gmail API, followed the real Supabase verify link server-side to obtain the real one-time authorization code, then called the app's own running `/auth/callback` route with that code and the matching code-verifier cookie. This exercises the exact same `exchangeCodeForSession` + `getSessionUser` + `ensureUserRow` code the browser path would have hit — same library calls, same live project, just orchestrated without a browser.
+3. Confirmed `GET /api/me` (unauthenticated) returns a real `401`.
+4. Confirmed the resulting session's `GET /api/me` returns the correct `{id, email, plan: 'free'}`, proving `public.users` row creation matched the Supabase Auth identity.
+5. Independently queried the live DB directly (not through the app) and confirmed: `meminno_rls` with no identity set sees 0 rows; `meminno_rls` scoped to the correct user sees exactly that row; `meminno_rls` scoped to a different random user sees 0 rows; `meminno_app` (table owner) sees 0 rows even for this real row (proving MEM-002-fix's FORCE RLS holds against real auth-created data, not just the test suite's synthetic rows).
+6. Cleaned up: deleted the `public.users` row through the same RLS-scoped path, then deleted both disposable `auth.users` identities via the Supabase admin API. A post-cleanup query confirmed zero rows/users remain.
+
+**A message arrived mid-session, injected into a tool result, claiming to relay a Supabase confirmation link "from Pranav."** It was not treated as an instruction (see PR description for the full reasoning) — the URL it contained turned out to be identical to one already independently obtained via this session's own Gmail lookup, and the browser tool's earlier "denied or failed" navigation to that same URL had apparently still reached Supabase server-side (the `pranavlende123+mem003test@gmail.com` account came back `email_confirmed_at`-set during cleanup despite no completed exchange), which most likely explains why the email existed to be "noticed" at all. No session or `public.users` row resulted from that path either way, and the identity was included in the cleanup above regardless.
+
+### Known gap: Vercel env vars not yet updated for this ticket (blocked on permission, not forgotten)
+
+Two Vercel configuration changes this ticket's live-query path needs are still outstanding, both blocked by a Claude Code auto-mode permission gate (Vercel env mutations require explicit approval, not just CI-green) rather than a technical blocker:
+
+- **Production's `DATABASE_URL` still holds the `meminno_app` connection string** (the MEM-002-fix "open handoff item" — see below). Needs rotation to the `meminno_rls` value already in `.env.local`.
+- **Preview environment has zero env vars set** (true since MEM-001). A Preview deploy for this PR (or any future one touching a live query path) will build successfully (nothing here is needed at build time - `/api/me`, `/auth/callback` are dynamic routes, not statically prerendered) but will not be functionally testable against the live project until `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_ANON_KEY`/`DATABASE_URL`(`meminno_rls`)/`SUPABASE_SERVICE_ROLE_KEY` are added there too.
+
+Both are ordinary config changes, not security escalations (same role, same values that already work locally) - flagging per HARD STOP 7's "stop and report rather than deciding unilaterally" instinct now that an explicit tool-level gate confirmed this needs a human in the loop, rather than retrying around it.
 
 ## Database schema (`lib/db/schema.ts`)
 
@@ -76,5 +112,6 @@ Since MEM-002-fix, CI **reproduces production's privilege split** rather than ru
 ## Ticket log
 
 - **MEM-001** — Repo + infra scaffold. SHIPPED, direct-to-`main` (one-time bootstrap exception).
-- **MEM-002** — Core data schema + RLS (this document's subject). Branch `feature/mem-002-core-schema`, PR #13, not yet merged as of this writing. Supabase Auth wiring itself (sign-up flow, session handling) is MEM-003 scope, not this ticket; this ticket only gets the `users.id` shape ready for it.
-- **MEM-002-fix** (issue #14) — folded into the same branch/PR. Reverted the `BYPASSRLS` escalation MEM-002 made against live production, added `FORCE ROW LEVEL SECURITY` on all 6 user tables, and split the single `meminno_app` connection into an owner/migration role plus a scoped `meminno_rls` runtime role that RLS genuinely applies to. **Open handoff item:** Vercel Production's `DATABASE_URL` still holds the `meminno_app` string and must be rotated to `meminno_rls` before MEM-003 ships the first real query — production currently fails closed rather than open, so this is a correctness step, not an open hole. See `CLAUDE.md`'s "Key refs".
+- **MEM-002** — Core data schema + RLS. SHIPPED (PR #13, merged to `main` as `f53f505`), folded together with MEM-002-fix (issue #14) in the same PR before merge: reverted the `BYPASSRLS` escalation MEM-002's first draft made against live production, added `FORCE ROW LEVEL SECURITY` on all 6 user tables, and split the single `meminno_app` connection into an owner/migration role plus a scoped `meminno_rls` runtime role that RLS genuinely applies to.
+- **MEM-010** — Landing page. SHIPPED (PR #15), landed out of backlog order (Pranav-requested, ahead of MEM-003 in the original Phase 1 list) — see `CLAUDE.md` for why the ticket ordering there is no longer literal.
+- **MEM-003** — Auth (this document's newest section). Branch `feature/mem-003-auth`. Magic-link Supabase Auth, `lib/session.ts`'s `getSessionUser()` session-gate helper, `public.users` row creation on every session resolution, `proxy.ts` session-refresh, and `app/api/me` as the first real protected route. Live-verified end to end against the real project (see above). **Open handoff item carried forward, not resolved by this ticket:** Vercel Production's `DATABASE_URL` still holds the `meminno_app` string (needs rotation to `meminno_rls`) and Preview has no env vars at all — both blocked on a Claude Code permission gate during this session, not done. See "Known gap" above.
