@@ -2,12 +2,20 @@
 
 /* MEM-008 (Core UI): Meminno's actual brand theme, applied as real design
  * tokens rather than a one-off page's inline styles — dark/charcoal base,
- * ONE warm coral-orange accent, off-white body text, a muted warm-gray for
- * secondary UI. Deliberately distinct from Turbo AI's light/blue look and
- * from sibling project Propinno's own golden/burnt-orange accent, and
- * deliberately NOT monospace/terminal-coded — the audience is university
- * *and* high-school students, not just CS majors, so this should read as a
- * general study tool, not a dev tool.
+ * ONE vivid cerulean/sky-blue accent, off-white body text, a muted
+ * warm-gray for secondary UI. Deliberately NOT monospace/terminal-coded —
+ * the audience is university *and* high-school students, not just CS
+ * majors, so this should read as a general study tool, not a dev tool.
+ *
+ * The accent color specifically (revised after an initial coral-orange
+ * pass): dark-background + blue-accent is the default look of nearly every
+ * dev tool (Vercel, Linear, GitHub dark mode, Discord), which is exactly
+ * the association this app needs to avoid despite also wanting a dark
+ * base. The way out is saturation/brightness, not hue avoidance — a
+ * bright, energetic cyan-leaning sky-blue (`#38bdf8`) reads distinctly
+ * different from those tools' flatter corporate/indigo-leaning blues
+ * (Vercel's `#0070f3`, Discord's `#5865f2`) or a moody navy/slate. Also
+ * distinct from sibling project Propinno's own golden/burnt-orange accent.
  *
  * Unconditional (not gated behind `prefers-color-scheme`) — this dark
  * palette IS the product's identity now, not an optional dark-mode toggle,
@@ -28,11 +36,11 @@
   --border: #2c2724;
   --muted: #221e1b;
   --muted-foreground: #a89e94;
-  --accent: #ff6b4a;
-  --accent-foreground: #200e08;
+  --accent: #38bdf8;
+  --accent-foreground: #062331;
   --destructive: #e5484d;
   --destructive-foreground: #fff5f4;
-  --ring: #ff6b4a;
+  --ring: #38bdf8;
 }
 
 @theme inline {

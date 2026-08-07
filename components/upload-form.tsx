@@ -1,6 +1,6 @@
 'use client'
 
-// MEM-004's upload form, restyled to the app's dark/coral theme (MEM-008)
+// MEM-004's upload form, restyled to the app's dark/sky-blue theme (MEM-008)
 // and given a real next step: on success it now links straight into the new
 // per-document workspace (app/dashboard/documents/[id]/page.tsx) instead of
 // just reporting a character count with nowhere to go — "after uploading, a

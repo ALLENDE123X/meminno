@@ -44,9 +44,9 @@ const STEPS = [
 
 export default function Home() {
   return (
-    // Forced light theme regardless of the app's new default dark/coral
+    // Forced light theme regardless of the app's new default dark/sky-blue
     // theme (MEM-008): components/ui/card.tsx and button.tsx now read
-    // dark-charcoal/coral CSS custom properties from app/globals.css by
+    // dark-charcoal/sky-blue CSS custom properties from app/globals.css by
     // default (the app-wide theme from here on), but this page was
     // deliberately shipped forced-light (MEM-010, its original comment
     // here) and isn't in MEM-008's explicit retrofit list (/upload,

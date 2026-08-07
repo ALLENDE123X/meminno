@@ -11,9 +11,9 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
 
 const baseClasses = "inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none ring-offset-background"
 
-// MEM-008: token-based, not hardcoded gray/black/blue — see app/globals.css
-// for the actual coral-orange/charcoal/off-white values behind these
-// classes. `default` is the one warm accent color; everything else is a
+// MEM-008: token-based, not hardcoded gray/black — see app/globals.css for
+// the actual cerulean/sky-blue accent + charcoal/off-white values behind
+// these classes. `default` is the one accent color; everything else is a
 // neutral (border/muted) so the accent doesn't get diluted by competing
 // "loud" colors on the same screen.
 const variantClasses: Record<ButtonVariant, string> = {

@@ -49,8 +49,8 @@ export default function SignInPage() {
   }
 
   return (
-    // MEM-008: dark/coral theme now applies by default (app/globals.css) —
-    // this page no longer needs to force its own light colors.
+    // MEM-008: dark/sky-blue theme now applies by default (app/globals.css)
+    // — this page no longer needs to force its own light colors.
     <main className="flex min-h-screen flex-col items-center justify-center px-6">
       <Link href="/" className="mb-8 text-lg font-semibold tracking-tight text-accent">
         Meminno
