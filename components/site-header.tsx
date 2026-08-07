@@ -33,6 +33,9 @@ export async function SiteHeader() {
             <Link href="/dashboard/stats" className="rounded-md px-3 py-2 text-foreground hover:bg-muted">
               Stats
             </Link>
+            <Link href="/billing" className="rounded-md px-3 py-2 text-foreground hover:bg-muted">
+              Billing
+            </Link>
             <SignOutButton />
           </nav>
         ) : (
