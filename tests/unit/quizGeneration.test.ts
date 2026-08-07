@@ -169,6 +169,30 @@ describe('generateQuizFromContent', () => {
     expect(callArgs.model).toBe('gpt-4o-mini')
   })
 
+  // Issue #26 / MEM-007-fix: the real root cause of the ~50% production
+  // failure rate was malformed forced-tool-call output (a missing required
+  // field, or an array item of the wrong type) that OpenAI's structured
+  // outputs `strict` mode is designed to prevent server-side. Pin that the
+  // tool definition actually requests it, and that both object levels of the
+  // schema satisfy strict mode's requirements (additionalProperties: false,
+  // every property required) - a regression here would silently reopen the
+  // exact bug this ticket fixes.
+  it('requests OpenAI structured-outputs strict mode with a strict-compliant schema', async () => {
+    process.env.OPENAI_API_KEY = 'test-key'
+    mockCreate.mockResolvedValueOnce(toolCallResponse({ questions: makeQuestions(6) }))
+
+    await generateQuizFromContent(VALID_NOTES_JSON, [])
+
+    const callArgs = mockCreate.mock.calls[0][0]
+    const tool = callArgs.tools[0]
+    expect(tool.function.strict).toBe(true)
+    expect(tool.function.parameters.additionalProperties).toBe(false)
+    expect(tool.function.parameters.properties.questions.items.additionalProperties).toBe(false)
+    expect(tool.function.parameters.properties.questions.items.required).toEqual(
+      expect.arrayContaining(['question', 'options', 'correctAnswer'])
+    )
+  })
+
   it('generates a quiz using notes as primary content when flashcards are provided too', async () => {
     process.env.OPENAI_API_KEY = 'test-key'
     mockCreate.mockResolvedValueOnce(toolCallResponse({ questions: makeQuestions(7) }))
@@ -223,40 +247,51 @@ describe('generateQuizFromContent', () => {
     expect(userMessage.length).toBeLessThanOrEqual(60_000)
   })
 
-  it('fails gracefully when the model returns too few questions', async () => {
+  // Issue #26 / MEM-007-fix: generateQuizFromContent now retries exactly
+  // once on `invalid_response` (defense-in-depth alongside `strict: true`
+  // above), so every "fails gracefully with invalid_response" case below
+  // must queue the malformed response TWICE - once per attempt - to reflect
+  // real end-to-end behavior when both attempts genuinely fail, and each
+  // asserts mockCreate was called exactly twice (proving the retry happened,
+  // and that it stopped there rather than looping).
+
+  it('fails gracefully when the model returns too few questions on both attempts', async () => {
     process.env.OPENAI_API_KEY = 'test-key'
-    mockCreate.mockResolvedValueOnce(toolCallResponse({ questions: makeQuestions(2) }))
+    mockCreate.mockResolvedValue(toolCallResponse({ questions: makeQuestions(2) }))
 
     const result = await generateQuizFromContent(VALID_NOTES_JSON, [])
     expect(result.success).toBe(false)
     if (!result.success) expect(result.reason).toBe('invalid_response')
+    expect(mockCreate).toHaveBeenCalledTimes(2)
   })
 
-  it('fails gracefully when a question\'s correctAnswer does not match any of its options', async () => {
+  it('fails gracefully when a question\'s correctAnswer does not match any of its options on both attempts', async () => {
     process.env.OPENAI_API_KEY = 'test-key'
     const questions = makeQuestions(6)
     questions[0].correctAnswer = 'Something else entirely'
-    mockCreate.mockResolvedValueOnce(toolCallResponse({ questions }))
+    mockCreate.mockResolvedValue(toolCallResponse({ questions }))
 
     const result = await generateQuizFromContent(VALID_NOTES_JSON, [])
     expect(result.success).toBe(false)
     if (!result.success) expect(result.reason).toBe('invalid_response')
+    expect(mockCreate).toHaveBeenCalledTimes(2)
   })
 
-  it('fails gracefully when OpenAI does not return a tool call', async () => {
+  it('fails gracefully when OpenAI does not return a tool call on either attempt', async () => {
     process.env.OPENAI_API_KEY = 'test-key'
-    mockCreate.mockResolvedValueOnce({
+    mockCreate.mockResolvedValue({
       choices: [{ finish_reason: 'stop', message: { content: 'huh?', tool_calls: undefined } }],
     })
 
     const result = await generateQuizFromContent(VALID_NOTES_JSON, [])
     expect(result.success).toBe(false)
     if (!result.success) expect(result.reason).toBe('invalid_response')
+    expect(mockCreate).toHaveBeenCalledTimes(2)
   })
 
-  it('fails gracefully when the tool call arguments are not valid JSON', async () => {
+  it('fails gracefully when the tool call arguments are not valid JSON on either attempt', async () => {
     process.env.OPENAI_API_KEY = 'test-key'
-    mockCreate.mockResolvedValueOnce({
+    mockCreate.mockResolvedValue({
       choices: [
         {
           finish_reason: 'tool_calls',
@@ -272,9 +307,26 @@ describe('generateQuizFromContent', () => {
     const result = await generateQuizFromContent(VALID_NOTES_JSON, [])
     expect(result.success).toBe(false)
     if (!result.success) expect(result.reason).toBe('invalid_response')
+    expect(mockCreate).toHaveBeenCalledTimes(2)
   })
 
-  it('fails gracefully on an API/network error, without crashing', async () => {
+  // The retry is the actual point of this ticket's defense-in-depth change:
+  // a first attempt that comes back malformed should not surface as a user
+  // -facing failure if a second attempt succeeds.
+  it('retries once and succeeds when the first attempt is malformed but the second is valid', async () => {
+    process.env.OPENAI_API_KEY = 'test-key'
+    mockCreate
+      .mockResolvedValueOnce(toolCallResponse({ questions: makeQuestions(2) })) // first: too few questions
+      .mockResolvedValueOnce(toolCallResponse({ questions: makeQuestions(7) })) // second: valid
+
+    const result = await generateQuizFromContent(VALID_NOTES_JSON, [])
+
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.questions).toHaveLength(7)
+    expect(mockCreate).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not retry on an API/network error - fails gracefully after a single attempt, without crashing', async () => {
     process.env.OPENAI_API_KEY = 'test-key'
     mockCreate.mockRejectedValueOnce(new Error('network down'))
 
@@ -282,5 +334,6 @@ describe('generateQuizFromContent', () => {
     expect(result.success).toBe(false)
     if (!result.success) expect(result.reason).toBe('api_error')
     expect(logger.error).toHaveBeenCalled()
+    expect(mockCreate).toHaveBeenCalledTimes(1)
   })
 })

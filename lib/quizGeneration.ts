@@ -42,11 +42,40 @@ const GENERATE_QUIZ_TOOL_NAME = 'generate_quiz'
 // Same OpenAI function-calling shape as lib/notesGeneration.ts /
 // lib/flashcardsGeneration.ts ({type: 'function', function: {name,
 // description, parameters}}), with a schema suited to a multiple-choice quiz.
+//
+// `strict: true` (issue #26 / MEM-007-fix, real root cause of the ~50%
+// failure rate): without it, gpt-4o-mini's forced tool-call arguments were
+// observed in production to come back malformed in ways that are perfectly
+// valid loose JSON but violate this schema - e.g. `questions[3]` missing
+// `correctAnswer` entirely, or `questions[4]` a bare string instead of an
+// object - which JSON.parse happily accepts and only zod's post-hoc
+// validation catches, after the (billed) call already happened. OpenAI's
+// structured-outputs `strict` mode enforces the JSON schema
+// constrained-decoding server-side, before the response is ever returned, so
+// the entire "syntactically valid JSON, wrong shape" failure class this
+// module's own zod schema was built to catch should no longer occur at the
+// source. Neither lib/notesGeneration.ts nor lib/flashcardsGeneration.ts
+// showed real evidence of the same failure rate (see this ticket's PR
+// description for the comparison), so they are intentionally left
+// unchanged - not because their schemas couldn't benefit in principle, but
+// per this ticket's explicit scope ("only if you find real evidence").
+//
+// Strict mode requires every object in the schema to set
+// `additionalProperties: false` and list every property as `required` (no
+// optional fields) - already true here (question/options/correctAnswer were
+// already all required), so the only schema change needed is adding
+// `additionalProperties: false` to both object levels. zod's post-parse
+// validation (generatedQuizSchema below, including the exactly-4-options and
+// correctAnswer-must-match-an-option checks strict mode's JSON Schema subset
+// cannot itself express) is kept as-is and still runs on every response -
+// defense in depth, not redundant: strict mode guarantees shape, not the
+// domain-specific invariants this app actually cares about.
 const GENERATE_QUIZ_TOOL: OpenAI.Chat.Completions.ChatCompletionTool = {
   type: 'function',
   function: {
     name: GENERATE_QUIZ_TOOL_NAME,
     description: 'Report a multiple-choice quiz generated from the provided notes (and, when available, flashcards).',
+    strict: true,
     parameters: {
       type: 'object',
       properties: {
@@ -68,10 +97,12 @@ const GENERATE_QUIZ_TOOL: OpenAI.Chat.Completions.ChatCompletionTool = {
               },
             },
             required: ['question', 'options', 'correctAnswer'],
+            additionalProperties: false,
           },
         },
       },
       required: ['questions'],
+      additionalProperties: false,
     },
   },
 }
@@ -226,39 +257,14 @@ function buildPromptText(notesContent: string, flashcards: QuizInputFlashcard[])
 }
 
 /**
- * Generates a multiple-choice quiz from a notes row's `content`, reinforced
- * by that note's existing flashcards (if any), via OpenAI forced tool-use.
- * Zod-validates the result and never throws — every failure mode (including
- * OPENAI_API_KEY being unset) returns a typed, caller-safe result instead of
- * an unhandled exception or a silent empty-quiz return.
+ * Single OpenAI call + parse + validate attempt, factored out of
+ * generateQuizFromContent so it can be tried up to twice (see
+ * MAX_ATTEMPTS below) without duplicating the request/parse/validate logic.
+ * Never throws - api_error is caught and returned as a typed result, same as
+ * before this was split out.
  */
-export async function generateQuizFromContent(
-  notesContent: string,
-  flashcards: QuizInputFlashcard[] = []
-): Promise<GenerateQuizResult> {
-  const trimmed = notesContent.trim()
-  if (!trimmed) {
-    return {
-      success: false,
-      reason: 'empty_input',
-      message: 'These notes have no content to generate a quiz from.',
-    }
-  }
-
-  const apiKey = process.env.OPENAI_API_KEY
-  if (!apiKey) {
-    logger.warn('AI quiz generation requested but OPENAI_API_KEY is not configured')
-    return {
-      success: false,
-      reason: 'not_configured',
-      message: `AI quiz generation isn't available right now. ${FALLBACK_MESSAGE}`,
-    }
-  }
-
-  const sourceText = buildPromptText(trimmed, flashcards)
-
+async function attemptGenerateQuiz(client: OpenAI, sourceText: string): Promise<GenerateQuizResult> {
   try {
-    const client = new OpenAI({ apiKey })
     const completion = await client.chat.completions.create({
       model: MODEL,
       messages: [
@@ -322,4 +328,69 @@ export async function generateQuizFromContent(
       message: `Something went wrong generating this quiz. ${FALLBACK_MESSAGE}`,
     }
   }
+}
+
+// One retry, not a loop (issue #26 / MEM-007-fix): defense-in-depth for a
+// genuinely malformed response even after `strict: true` above, which should
+// eliminate most but promises to eliminate none of this failure class in
+// principle. Deliberately bounded to a single extra attempt (MAX_ATTEMPTS =
+// 2 total) rather than a retry loop, both to keep worst-case latency/cost on
+// this endpoint predictable and to avoid ever looping unboundedly.
+//
+// Only retried on `invalid_response` - not `api_error` (a real
+// network/API-level failure retrying immediately is unlikely to help and is
+// out of scope here) and not `not_configured`/`empty_input` (retrying a
+// request that can never succeed wastes a call for nothing).
+//
+// Rate-limit/budget interaction (CLAUDE.md HARD STOP 6): this retry is
+// entirely internal to this function and invisible to the caller.
+// app/api/notes/[id]/quiz's route calls claimQuizBudget() exactly once per
+// POST request, BEFORE calling generateQuizFromContent - the route never
+// knows or cares whether zero, one, or two OpenAI calls happened inside a
+// single generateQuizFromContent invocation, so a retry here can never
+// double-claim a day's quota or bypass the budget check. It does mean a
+// single POST can cost up to two real OpenAI calls instead of one on the
+// (expected to be rare, post-strict-mode) retry path - an accepted,
+// explicitly bounded tradeoff, not an unbounded one.
+const MAX_ATTEMPTS = 2
+
+/**
+ * Generates a multiple-choice quiz from a notes row's `content`, reinforced
+ * by that note's existing flashcards (if any), via OpenAI forced tool-use.
+ * Zod-validates the result and never throws — every failure mode (including
+ * OPENAI_API_KEY being unset) returns a typed, caller-safe result instead of
+ * an unhandled exception or a silent empty-quiz return.
+ */
+export async function generateQuizFromContent(
+  notesContent: string,
+  flashcards: QuizInputFlashcard[] = []
+): Promise<GenerateQuizResult> {
+  const trimmed = notesContent.trim()
+  if (!trimmed) {
+    return {
+      success: false,
+      reason: 'empty_input',
+      message: 'These notes have no content to generate a quiz from.',
+    }
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY
+  if (!apiKey) {
+    logger.warn('AI quiz generation requested but OPENAI_API_KEY is not configured')
+    return {
+      success: false,
+      reason: 'not_configured',
+      message: `AI quiz generation isn't available right now. ${FALLBACK_MESSAGE}`,
+    }
+  }
+
+  const sourceText = buildPromptText(trimmed, flashcards)
+  const client = new OpenAI({ apiKey })
+
+  let result = await attemptGenerateQuiz(client, sourceText)
+  for (let attempt = 2; attempt <= MAX_ATTEMPTS && !result.success && result.reason === 'invalid_response'; attempt++) {
+    logger.warn({ attempt }, 'AI quiz generation: retrying once after invalid_response')
+    result = await attemptGenerateQuiz(client, sourceText)
+  }
+  return result
 }
