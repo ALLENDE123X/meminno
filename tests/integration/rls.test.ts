@@ -172,3 +172,122 @@ describe.skipIf(!DATABASE_URL)('RLS enforces per-user isolation on the app\'s re
     }
   })
 })
+
+// Regression suite for issue #23: before this fix, every child table's
+// `withCheck` was a flat `user_id = caller` check with no verification that
+// the row's parent FK (document_id/note_id/quiz_id) actually belonged to
+// that same caller. User B could INSERT a child row with `user_id = B`
+// while pointing its FK at user A's parent row - the FK itself resolves
+// fine (Postgres FK referential-integrity checks bypass RLS by design), so
+// nothing stopped it. `lib/db/schema.ts`'s `withCheck` clauses now add an
+// EXISTS subquery requiring the parent row to be visible to (owned by) the
+// caller; this suite proves that against the real `meminno_rls` connection,
+// not a mock, for all four affected tables, and separately proves the
+// legitimate same-user path was not broken by the tightening.
+describe.skipIf(!DATABASE_URL)('child-table RLS withCheck rejects parent-ownership forgery (issue #23)', () => {
+  let sql: postgres.Sql
+  const userA = randomUUID()
+  const userB = randomUUID()
+  // A real parent chain, entirely owned by user A: documents -> notes ->
+  // quizzes. Reused read-only by every forgery test below (user B never
+  // succeeds in writing through it), then written to once more by the
+  // final happy-path test.
+  let documentId: string
+  let noteId: string
+  let quizId: string
+
+  beforeAll(async () => {
+    sql = postgres(DATABASE_URL!, { prepare: false, max: 1 })
+
+    await asUser(userA, (tx) => tx`insert into users (id, email) values (${userA}, 'a-parent-chain@example.com')`)
+    await asUser(userB, (tx) => tx`insert into users (id, email) values (${userB}, 'b-forger@example.com')`)
+
+    const [doc] = await asUser(userA, (tx) =>
+      tx`insert into documents (id, user_id, title, source_type) values (gen_random_uuid(), ${userA}, 'A parent doc', 'text') returning id`
+    )
+    documentId = doc.id as string
+
+    const [note] = await asUser(userA, (tx) =>
+      tx`insert into notes (id, document_id, user_id, content) values (gen_random_uuid(), ${documentId}, ${userA}, 'A parent note') returning id`
+    )
+    noteId = note.id as string
+
+    const [quiz] = await asUser(userA, (tx) =>
+      tx`insert into quizzes (id, note_id, user_id, questions) values (gen_random_uuid(), ${noteId}, ${userA}, '[]'::jsonb) returning id`
+    )
+    quizId = quiz.id as string
+  })
+
+  afterAll(async () => {
+    if (!sql) return
+    // Cascades take every child row (notes/flashcards/quizzes/quiz_attempts
+    // this suite created) with them - same cleanup pattern as the describe
+    // block above.
+    for (const id of [userA, userB]) {
+      await asUser(id, (tx) => tx`delete from users where id = ${id}`).catch(() => {})
+    }
+    await sql.end()
+  })
+
+  async function asUser<T>(userId: string, fn: (tx: postgres.TransactionSql) => Promise<T>): Promise<T> {
+    const result = await sql.begin(async (tx) => {
+      await tx`select set_config('app.current_user_id', ${userId}, true)`
+      return fn(tx)
+    })
+    return result as T
+  }
+
+  it('user B cannot INSERT a note claiming user_id=B while pointing document_id at user A\'s document', async () => {
+    await expect(
+      asUser(userB, (tx) =>
+        tx`insert into notes (id, document_id, user_id, content) values (gen_random_uuid(), ${documentId}, ${userB}, 'forged note')`
+      )
+    ).rejects.toThrow(/row-level security/i)
+  })
+
+  it('user B cannot INSERT a flashcard claiming user_id=B while pointing note_id at user A\'s note', async () => {
+    await expect(
+      asUser(userB, (tx) =>
+        tx`insert into flashcards (id, note_id, user_id, front, back) values (gen_random_uuid(), ${noteId}, ${userB}, 'forged front', 'forged back')`
+      )
+    ).rejects.toThrow(/row-level security/i)
+  })
+
+  it('user B cannot INSERT a quiz claiming user_id=B while pointing note_id at user A\'s note', async () => {
+    await expect(
+      asUser(userB, (tx) =>
+        tx`insert into quizzes (id, note_id, user_id, questions) values (gen_random_uuid(), ${noteId}, ${userB}, '[]'::jsonb)`
+      )
+    ).rejects.toThrow(/row-level security/i)
+  })
+
+  it('user B cannot INSERT a quiz_attempt claiming user_id=B while pointing quiz_id at user A\'s quiz', async () => {
+    await expect(
+      asUser(userB, (tx) =>
+        tx`insert into quiz_attempts (id, quiz_id, user_id, score, answers) values (gen_random_uuid(), ${quizId}, ${userB}, 0, '[]'::jsonb)`
+      )
+    ).rejects.toThrow(/row-level security/i)
+  })
+
+  it('legitimate same-user inserts through every tightened withCheck still succeed (happy path not broken)', async () => {
+    const [ownNote] = await asUser(userA, (tx) =>
+      tx`insert into notes (id, document_id, user_id, content) values (gen_random_uuid(), ${documentId}, ${userA}, 'legit note') returning id`
+    )
+    expect(ownNote?.id).toBeTruthy()
+
+    const [ownFlashcard] = await asUser(userA, (tx) =>
+      tx`insert into flashcards (id, note_id, user_id, front, back) values (gen_random_uuid(), ${noteId}, ${userA}, 'legit front', 'legit back') returning id`
+    )
+    expect(ownFlashcard?.id).toBeTruthy()
+
+    const [ownQuiz] = await asUser(userA, (tx) =>
+      tx`insert into quizzes (id, note_id, user_id, questions) values (gen_random_uuid(), ${noteId}, ${userA}, '[]'::jsonb) returning id`
+    )
+    expect(ownQuiz?.id).toBeTruthy()
+
+    const [ownAttempt] = await asUser(userA, (tx) =>
+      tx`insert into quiz_attempts (id, quiz_id, user_id, score, answers) values (gen_random_uuid(), ${quizId}, ${userA}, 100, '[]'::jsonb) returning id`
+    )
+    expect(ownAttempt?.id).toBeTruthy()
+  })
+})
