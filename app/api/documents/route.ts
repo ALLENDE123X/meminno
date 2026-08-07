@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { getSessionUser, sessionErrorResponse } from '@/lib/session'
-import { enforceUploadLimits } from '@/lib/uploadLimits'
+import { checkBurstLimit, claimUploadBudget } from '@/lib/uploadLimits'
 import { extractTextFromPdf } from '@/lib/pdfExtract'
 import { withUserContext } from '@/lib/db'
 import { documents } from '@/lib/db/schema'
@@ -22,6 +22,50 @@ const MAX_PDF_BYTES = 4 * 1024 * 1024
 // generation prompt built from it, within sane size.
 const MAX_TEXT_CHARS = 200_000
 
+type ParsedUpload =
+  | { kind: 'pdf'; file: File; title: string }
+  | { kind: 'text'; rawText: string; title: string }
+
+/**
+ * Parses and cheaply validates the incoming form data (content type, size,
+ * non-empty text) — everything that doesn't require actually doing the
+ * expensive work (PDF text extraction). Returns either the validated
+ * upload or a ready-to-return error NextResponse.
+ *
+ * Deliberately does NOT claim any upload-budget quota — see
+ * claimUploadBudget()'s call site below for why that has to happen after
+ * this, not before.
+ */
+function parseUpload(formData: FormData): ParsedUpload | NextResponse {
+  const file = formData.get('file')
+  const pastedText = formData.get('text')
+  const titleField = formData.get('title')
+  const title = typeof titleField === 'string' ? titleField.trim() : ''
+
+  if (file instanceof File) {
+    if (file.type !== 'application/pdf') {
+      return NextResponse.json({ error: 'Only application/pdf files are supported' }, { status: 400 })
+    }
+    if (file.size > MAX_PDF_BYTES) {
+      return NextResponse.json({ error: `PDF must be under ${MAX_PDF_BYTES / (1024 * 1024)}MB` }, { status: 400 })
+    }
+    return { kind: 'pdf', file, title: title || file.name.replace(/\.pdf$/i, '') }
+  }
+
+  if (typeof pastedText === 'string' && pastedText.trim()) {
+    if (pastedText.length > MAX_TEXT_CHARS) {
+      return NextResponse.json(
+        { error: `Pasted text must be under ${MAX_TEXT_CHARS.toLocaleString()} characters` },
+        { status: 400 }
+      )
+    }
+    const rawText = pastedText.trim()
+    return { kind: 'text', rawText, title: title || rawText.slice(0, 60) }
+  }
+
+  return NextResponse.json({ error: 'Provide either a PDF file ("file") or pasted text ("text")' }, { status: 400 })
+}
+
 export async function POST(req: Request) {
   const session = await getSessionUser(req)
   if (!session.ok) {
@@ -30,10 +74,13 @@ export async function POST(req: Request) {
   }
   const { userId, plan } = session
 
-  const limit = await enforceUploadLimits(userId, plan)
-  if (!limit.ok) {
-    logger.warn({ userId, plan }, 'Document upload rate/budget limited')
-    return NextResponse.json({ error: limit.reason }, { status: limit.status })
+  // Burst check runs before the body is even parsed — cheap,
+  // content-independent, and legitimately meant to catch rapid-fire
+  // requests regardless of what's in them.
+  const burst = await checkBurstLimit(userId)
+  if (!burst.ok) {
+    logger.warn({ userId, plan }, 'Document upload burst-limited')
+    return NextResponse.json({ error: burst.reason }, { status: burst.status })
   }
 
   let formData: FormData
@@ -43,28 +90,30 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Expected multipart/form-data with a "file" or "text" field' }, { status: 400 })
   }
 
-  const file = formData.get('file')
-  const pastedText = formData.get('text')
-  const titleField = formData.get('title')
+  const parsed = parseUpload(formData)
+  if (parsed instanceof NextResponse) {
+    // A wrong content type, an oversized file/text, or a missing
+    // file/text field — none of these should cost a free user one of
+    // their 5 daily uploads, so the budget claim below deliberately
+    // hasn't happened yet at this point. Caught during MEM-004's merge
+    // review; see ARCHITECTURE.md's "Rate-limit ordering fix" note.
+    return parsed
+  }
 
-  let sourceType: 'pdf' | 'text'
+  // Only now, once the request is known to be a well-formed upload that's
+  // actually going to attempt creating a document, claim a day's quota.
+  const budget = await claimUploadBudget(userId, plan)
+  if (!budget.ok) {
+    logger.warn({ userId, plan }, 'Document upload budget limited')
+    return NextResponse.json({ error: budget.reason }, { status: budget.status })
+  }
+
   let rawText: string
-  let title: string
-
-  if (file instanceof File) {
-    if (file.type !== 'application/pdf') {
-      return NextResponse.json({ error: 'Only application/pdf files are supported' }, { status: 400 })
-    }
-    if (file.size > MAX_PDF_BYTES) {
-      return NextResponse.json(
-        { error: `PDF must be under ${MAX_PDF_BYTES / (1024 * 1024)}MB` },
-        { status: 400 }
-      )
-    }
-
+  const sourceType = parsed.kind
+  if (parsed.kind === 'pdf') {
     let extracted: string
     try {
-      extracted = await extractTextFromPdf(new Uint8Array(await file.arrayBuffer()))
+      extracted = await extractTextFromPdf(new Uint8Array(await parsed.file.arrayBuffer()))
     } catch (error) {
       logger.error({ error, userId }, 'PDF text extraction failed')
       return NextResponse.json({ error: 'Could not read this PDF — it may be corrupted or password-protected' }, { status: 422 })
@@ -75,20 +124,9 @@ export async function POST(req: Request) {
         { status: 422 }
       )
     }
-
     rawText = extracted
-    sourceType = 'pdf'
-    title = typeof titleField === 'string' && titleField.trim() ? titleField.trim() : file.name.replace(/\.pdf$/i, '')
-  } else if (typeof pastedText === 'string' && pastedText.trim()) {
-    if (pastedText.length > MAX_TEXT_CHARS) {
-      return NextResponse.json({ error: `Pasted text must be under ${MAX_TEXT_CHARS.toLocaleString()} characters` }, { status: 400 })
-    }
-
-    rawText = pastedText.trim()
-    sourceType = 'text'
-    title = typeof titleField === 'string' && titleField.trim() ? titleField.trim() : rawText.slice(0, 60)
   } else {
-    return NextResponse.json({ error: 'Provide either a PDF file ("file") or pasted text ("text")' }, { status: 400 })
+    rawText = parsed.rawText
   }
 
   // storage_path stays null even for sourceType='pdf': v1 extracts text
@@ -97,7 +135,7 @@ export async function POST(req: Request) {
   // original PDF binary to Supabase Storage. See ARCHITECTURE.md's MEM-004
   // entry for the reasoning and what a follow-up ticket would need to add.
   const [doc] = await withUserContext(userId, (tx) =>
-    tx.insert(documents).values({ userId, title, sourceType, rawText, storagePath: null }).returning()
+    tx.insert(documents).values({ userId, title: parsed.title, sourceType, rawText, storagePath: null }).returning()
   )
 
   logger.info({ userId, documentId: doc.id, sourceType }, 'Document created')

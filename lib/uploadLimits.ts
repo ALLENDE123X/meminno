@@ -7,18 +7,30 @@
 // uncapped" reasoning applies (see lib/aiBudget.ts's header comment for the
 // full Propinno-incident writeup this pattern exists to prevent).
 //
-// Three checks, two distinct mechanisms:
-//   1. Burst protection (lib/ratelimit.ts, unmodified) — catches rapid-fire
-//      abuse/misclick spam from one caller within seconds.
-//   2. Per-user daily cap (lib/aiBudget.ts's claimDailyBudget, keyed per
-//      user) — this is the actual free-tier cap CLAUDE.md flagged as TBD
-//      ("Pricing (TBD numbers finalized in MEM-004)"); this ticket is what
-//      finally picks real numbers, see the constants below for reasoning.
-//   3. Platform-wide daily ceiling (claimDailyBudget again, keyed globally,
-//      independent of any single user's cap) — the direct mechanism CLAUDE.md
-//      HARD STOP 6 describes: bounds worst-case cost/load even if every
-//      per-user cap were somehow bypassed or a bug fanned out across many
-//      accounts at once.
+// Three checks, two distinct mechanisms, split into two functions
+// deliberately (not one `enforceUploadLimits`, which this file originally
+// exported) so the route can call them at two different points:
+//   1. checkBurstLimit() — lib/ratelimit.ts, unmodified — catches
+//      rapid-fire abuse/misclick spam from one caller within seconds. Cheap
+//      and content-independent, so the route calls this BEFORE parsing the
+//      request body at all.
+//   2. claimUploadBudget() — lib/aiBudget.ts's claimDailyBudget, called
+//      twice:
+//        a. per-user daily cap (keyed per user) — the actual free-tier cap
+//           CLAUDE.md flagged as TBD ("Pricing (TBD numbers finalized in
+//           MEM-004)"); this ticket is what finally picks real numbers, see
+//           the constants below for reasoning.
+//        b. platform-wide daily ceiling (keyed globally, independent of any
+//           single user's cap) — the direct mechanism CLAUDE.md HARD STOP 6
+//           describes: bounds worst-case cost/load even if every per-user
+//           cap were somehow bypassed or a bug fanned out across many
+//           accounts at once.
+//      Both claim a real day's quota, so the route calls this AFTER the
+//      request body has been parsed and validated — a request that fails
+//      simple validation (wrong file type, no file/text field) should 400
+//      without spending any of a free user's 5 daily uploads. This ordering
+//      bug (budget claimed before validation) was caught during MEM-004's
+//      merge review — see ARCHITECTURE.md's "Rate-limit ordering fix" note.
 import { limitRequest } from './ratelimit'
 import { claimDailyBudget } from './aiBudget'
 
@@ -50,8 +62,13 @@ export const PLATFORM_DAILY_UPLOAD_CAP = 500
 
 export type UploadLimitResult = { ok: true } | { ok: false; status: 429; reason: string }
 
-/** Applies all three checks above, in ascending cost order, short-circuiting on the first failure. */
-export async function enforceUploadLimits(userId: string, plan: string): Promise<UploadLimitResult> {
+/**
+ * Layer 1: burst protection. Cheap and independent of what's in the
+ * request, so the route calls this before parsing the body — no reason to
+ * make a caller upload a whole PDF just to find out they're being
+ * rate-limited.
+ */
+export async function checkBurstLimit(userId: string): Promise<UploadLimitResult> {
   // meminno- prefix: this Upstash Redis instance is shared with the
   // Propinno sibling project (see lib/aiBudget.ts / CLAUDE.md) — every key
   // this app writes must be namespaced to avoid colliding with Propinno's
@@ -60,7 +77,18 @@ export async function enforceUploadLimits(userId: string, plan: string): Promise
   if (!burst.success) {
     return { ok: false, status: 429, reason: 'Too many upload requests — please slow down and try again shortly.' }
   }
+  return { ok: true }
+}
 
+/**
+ * Layers 2-3: the actual daily-quota claim (per-user, then platform-wide).
+ * Both `claimDailyBudget` calls atomically INCREMENT their counter
+ * regardless of the eventual outcome of the request, so the route must only
+ * call this once it knows the request is otherwise valid and about to
+ * create a `documents` row — never before validating the body, or a
+ * malformed/rejected request would still burn a day's quota for nothing.
+ */
+export async function claimUploadBudget(userId: string, plan: string): Promise<UploadLimitResult> {
   const perUserCap = plan === 'free' ? FREE_TIER_DAILY_UPLOAD_CAP : PAID_TIER_DAILY_UPLOAD_CAP
   const withinUserCap = await claimDailyBudget(`document-upload:user:${userId}`, perUserCap)
   if (!withinUserCap) {

@@ -1,73 +1,105 @@
-// Session-gate helper — real Supabase Auth verification, not a stub.
-//
-// MEM-003 (issue #3: "Supabase Auth integration, session-gate helper
-// pattern mirrored from Propinno's lib/session.ts, discriminated
-// {ok:true,userId}|{ok:false,status:401|403} shape") has not landed as of
-// this ticket (MEM-004, issue #4) — no branch or PR exists for it yet (see
-// ARCHITECTURE.md's MEM-004 entry). MEM-004's upload route needs real auth
-// regardless, so this file IS that helper, built minimally against the REAL
-// Supabase Auth infra that already exists (lib/supabase/server.ts,
-// provisioned since MEM-001) — not a fake/insecure bypass. MEM-003 should
-// extend this (richer profile fields at creation time, sign-up UX) rather
-// than re-invent it.
-//
-// Mirrors Propinno's lib/session.ts in shape (discriminated SessionResult,
-// a sessionErrorResponse() helper), not in mechanism — Propinno's users
-// authenticate via Twilio phone OTP and a raw session cookie holding their
-// own DB id; Meminno uses real Supabase Auth, so identity comes from a
-// cryptographically verified JWT instead.
-import { createClient as createServerSupabaseClient } from '@/lib/supabase/server'
+import { createClient } from '@/lib/supabase/server'
 import { withUserContext } from '@/lib/db'
 import { users } from '@/lib/db/schema'
+import { logger } from '@/lib/logger'
 
 export type SessionResult =
   | { ok: true; userId: string; plan: string }
   | { ok: false; status: 401 | 403 }
 
 /**
- * Resolves the caller's identity to a real, Supabase-Auth-verified user and
- * ensures a corresponding `public.users` row exists.
+ * Resolves the current request's Supabase Auth session to a userId (+ plan).
  *
- * Accepts either a `Bearer <access_token>` Authorization header or a
- * cookie-based Supabase session (whichever `@supabase/ssr`'s server client
- * resolves) — the bearer-token path exists because there is no sign-in UI
- * yet (MEM-003) to mint a browser cookie session, and it also makes this
- * route callable by a future mobile client without change. Either way this
- * calls `supabase.auth.getUser(...)`, never `getSession()`: `getUser` round
- * -trips to Supabase's Auth server to verify the JWT signature, rather than
- * trusting an unverified locally-decoded cookie/token — see
- * https://supabase.com/docs/guides/auth/server-side/nextjs ("Never trust
- * getSession() inside server code").
+ * Mirrors Propinno's lib/session.ts discriminated-union pattern
+ * ({ok:true,userId}|{ok:false,status:401|403}), adapted from Propinno's
+ * phone/cookie-session check to Supabase Auth:
  *
- * `public.users.id` matching `auth.users.id` is an application-level
- * invariant (lib/db/schema.ts's header comment — there's no DB-level FK,
- * Supabase's managed `auth` schema doesn't allow one). Since MEM-003 hasn't
- * shipped a dedicated profile-creation flow yet, this function upserts the
- * profile row itself on every call: creates it on a caller's first-ever
- * request, and keeps `email` in sync afterwards. The upsert runs through
- * `withUserContext` with the caller's OWN id, so the `users_own_row` RLS
- * policy (`WITH CHECK id = caller`) allows it — this is a normal
- * self-service write, not a privileged bypass.
+ * - 401: no session, or the session doesn't validate. Uses
+ *   supabase.auth.getUser() rather than getSession() deliberately -
+ *   getSession() only decodes the JWT it finds in a cookie without checking
+ *   it against Supabase's Auth server, so it will happily "succeed" on a
+ *   forged or stale cookie. getUser() makes a real network call to Supabase
+ *   Auth and can only return a user for a token Supabase itself issued and
+ *   still considers valid. See
+ *   https://supabase.com/docs/guides/auth/server-side/nextjs for why this
+ *   distinction matters for any server-side check that gates real access.
+ * - 403: reserved, not reachable yet. Propinno's 403 fires for a real
+ *   session belonging to a user who isn't an active paying subscriber -
+ *   Meminno has no equivalent concept yet (billing is a later ticket, not
+ *   MEM-003). Kept in the return type now so every call site already
+ *   handles it, rather than becoming a breaking change to every caller once
+ *   a real 403 condition exists.
+ *
+ * `req` is optional and, when passed, also allows a `Bearer <access_token>`
+ * Authorization header to satisfy the session, alongside the usual
+ * cookie-based path — both go through the same `supabase.auth.getUser(jwt?)`
+ * call. Added by MEM-004 (upload flow): at the time it shipped there was no
+ * sign-in UI yet to mint a browser cookie session, so its route (and its
+ * live E2E verification) needed a way to authenticate without one; it also
+ * makes any route using this callable by a future non-browser client
+ * without change. Existing cookie-only call sites (app/auth/callback,
+ * app/api/me) are unaffected — they simply don't pass `req`.
+ *
+ * On every successful resolution, upserts a matching public.users row for
+ * this Supabase Auth identity (see ensureUserRow below), returning its
+ * `plan` alongside `userId` so callers that need it (e.g. MEM-004's
+ * per-plan upload caps) don't need a second query. public.users has no
+ * DB-level FK to auth.users (a documented Supabase platform constraint on
+ * this project - meminno_app/meminno_rls can never be granted USAGE on the
+ * auth schema; see CLAUDE.md's "auth schema access" section), so that link
+ * is an application-level invariant, and this function is what upholds it
+ * on every authenticated request rather than only at a one-time signup
+ * step.
  */
-export async function getSessionUser(req: Request): Promise<SessionResult> {
-  const authHeader = req.headers.get('authorization')
+export async function getSessionUser(req?: Request): Promise<SessionResult> {
+  const authHeader = req?.headers.get('authorization')
   const bearerToken = authHeader?.toLowerCase().startsWith('bearer ')
     ? authHeader.slice('bearer '.length).trim()
     : undefined
 
-  const supabase = await createServerSupabaseClient()
+  const supabase = await createClient()
   const { data, error } = await supabase.auth.getUser(bearerToken)
-  if (error || !data.user) {
+
+  if (error || !data.user) return { ok: false, status: 401 }
+
+  const authUser = data.user
+  if (!authUser.email) {
+    // users.email is NOT NULL, and every sign-in path this app offers
+    // (magic link, or a Bearer token minted from that same flow) requires
+    // an email to begin with - should be unreachable in practice. Fail
+    // closed rather than insert a row that violates the schema.
+    logger.error({ userId: authUser.id }, 'Supabase Auth user has no email on the session')
     return { ok: false, status: 401 }
   }
 
-  const userId = data.user.id
-  // Supabase Auth users created via email/password or magic link (the only
-  // providers CLAUDE.md scopes for this app) always carry an email; the
-  // fallback just keeps the notNull `users.email` column from throwing on
-  // an edge case rather than claiming to guarantee one never occurs.
-  const email = data.user.email ?? ''
+  const plan = await ensureUserRow(authUser.id, authUser.email)
+  return { ok: true, userId: authUser.id, plan }
+}
 
+/**
+ * Looks up or creates the public.users row for a Supabase Auth identity,
+ * returning its current plan.
+ *
+ * Upserts via onConflictDoUpdate() rather than onConflictDoNothing():
+ * `id` is the primary key and, by convention (see lib/db/schema.ts's
+ * header comment on `users`), always equals the Supabase Auth user's own
+ * id, so a concurrent second call for the same brand-new account (e.g. two
+ * tabs completing the magic-link callback at once) still races safely
+ * instead of erroring on a duplicate-key violation — the same safety
+ * onConflictDoNothing() had. The difference: onConflictDoUpdate() also
+ * keeps `email` in sync with Supabase Auth on every later call, which
+ * onConflictDoNothing() would silently stop doing after the first insert.
+ * Flagged during MEM-004's merge review (independently, by two reviews) as
+ * the better default here — an auth-provider email change (e.g. the user
+ * updates it in Supabase Auth) shouldn't leave this table permanently
+ * stale.
+ *
+ * Runs through withUserContext(userId, ...) like every other query in this
+ * app - the RLS policy's withCheck (`meminno_current_user_id() = id`) only
+ * passes because the transaction's identity GUC is set to the same id being
+ * inserted.
+ */
+async function ensureUserRow(userId: string, email: string): Promise<string> {
   const [profile] = await withUserContext(userId, (tx) =>
     tx
       .insert(users)
@@ -75,8 +107,7 @@ export async function getSessionUser(req: Request): Promise<SessionResult> {
       .onConflictDoUpdate({ target: users.id, set: { email } })
       .returning({ plan: users.plan })
   )
-
-  return { ok: true, userId, plan: profile?.plan ?? 'free' }
+  return profile?.plan ?? 'free'
 }
 
 /** Standard error body/status pair for a failed getSessionUser() result. */
