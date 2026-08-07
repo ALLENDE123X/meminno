@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import type { Metadata } from 'next'
 import { createClient } from '@/lib/supabase/server'
-import { getWeeklyStats, buildStatCardImageUrl } from '@/lib/stats'
+import { getWeeklyStats, buildStatCardImageUrl, buildStatCardShareUrl } from '@/lib/stats'
 import { StatCard } from '@/components/stat-card'
 import { CopyShareLinkButton } from '@/components/copy-share-link-button'
 import { buttonVariants } from '@/components/ui/button'
@@ -43,7 +43,13 @@ export default async function WeeklyStatsPage() {
   }
 
   const stats = await getWeeklyStats(user.id)
+  // Two different URLs, deliberately: the download button wants the raw PNG
+  // directly, while "copy share link" hands out the /share page instead —
+  // pasting a bare image URL into iMessage/X/LinkedIn renders as a plain
+  // link, not a rich preview, since there's no og:image/twitter:card meta
+  // around it. See buildStatCardShareUrl()'s doc comment in lib/stats.ts.
   const imageUrl = buildStatCardImageUrl(stats)
+  const shareUrl = buildStatCardShareUrl(stats)
 
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-8 p-8">
@@ -58,7 +64,7 @@ export default async function WeeklyStatsPage() {
         <a href={imageUrl} download="meminno-weekly-stats.png" className={buttonVariants()}>
           Download image
         </a>
-        <CopyShareLinkButton path={imageUrl} />
+        <CopyShareLinkButton path={shareUrl} />
       </div>
     </main>
   )

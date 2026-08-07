@@ -2,14 +2,18 @@ import { ImageResponse } from 'next/og'
 import { NextResponse } from 'next/server'
 import { logger } from '@/lib/logger'
 import { limitRequest } from '@/lib/ratelimit'
-import { parseStatCardImageParams, type StatCardImageParams, type ScoreTrend } from '@/lib/stats'
+import { parseStatCardImageParams, verifyStatCardSignature, type StatCardImageParams, type ScoreTrend } from '@/lib/stats'
 
 // MEM-009's shareable stat-card image. Deliberately public and
 // unauthenticated — see lib/stats.ts's header comment for why: it takes
-// pre-computed, already-clamped numbers via query params instead of a user
-// id, so there is nothing here to leak and no DB/auth dependency at all. The
-// dashboard page (which DOES require a session) is the only place that
-// builds this URL, via buildStatCardImageUrl().
+// pre-computed numbers via query params instead of a user id, so there's no
+// DB/auth dependency here at all. The dashboard page (which DOES require a
+// session) is the only place that builds a valid URL for this, via
+// buildStatCardImageUrl(). Every request is required to carry a `sig` HMAC
+// (verifyStatCardSignature(), lib/stats.ts) proving the params came from
+// there unmodified — an unsigned or tampered request is rejected before a
+// single pixel is rendered. See lib/stats.ts's header comment (design choice
+// #3) for the forgery/forged-numbers issue this closes.
 //
 // next/og's ImageResponse (Satori under the hood) is used rather than a new
 // dependency — it ships with Next.js 16 already (confirmed via
@@ -17,6 +21,14 @@ import { parseStatCardImageParams, type StatCardImageParams, type ScoreTrend } f
 // install was needed. Rendered and screenshot-verified locally via `npm run
 // dev` before this route was considered done — see the MEM-009 PR
 // description for the verification notes.
+//
+// NOT fully dependency-free at runtime: Satori fetches Twemoji SVGs and
+// remote font subsets from cdn.jsdelivr.net on demand for glyphs outside its
+// bundled default font (non-Latin text, emoji). The card's copy is
+// deliberately plain ASCII today specifically to avoid that path, but that's
+// a content choice, not a guarantee this route enforces — a future edit that
+// adds emoji or non-Latin text here would introduce a real external network
+// call at render time, worth knowing before assuming this route has none.
 
 const WIDTH = 1200
 const HEIGHT = 630
@@ -25,7 +37,10 @@ export async function GET(request: Request) {
   const ip = request.headers.get('x-forwarded-for') ?? '127.0.0.1'
   // meminno- prefix: shared Redis instance with Propinno (see CLAUDE.md).
   // Rate limited because this route does real CPU work (image rendering) on
-  // a public, unauthenticated path.
+  // a public, unauthenticated path. Signing (below) also bounds this: only
+  // URLs this app itself signed can reach the render path at all, so this
+  // limit is defense against replaying/hammering a small number of valid
+  // signed URLs, not an open unsigned-URL space.
   const { success } = await limitRequest(`meminno-stat-card-image_${ip}`)
   if (!success) {
     logger.warn({ ip }, 'Stat card image rate limited')
@@ -33,6 +48,12 @@ export async function GET(request: Request) {
   }
 
   const { searchParams } = new URL(request.url)
+
+  if (!verifyStatCardSignature(searchParams)) {
+    logger.warn({ ip }, 'Stat card image request rejected — missing or invalid signature')
+    return NextResponse.json({ error: 'Invalid or missing signature' }, { status: 400 })
+  }
+
   const stats = parseStatCardImageParams(searchParams)
 
   return new ImageResponse(<StatCardImage {...stats} />, {
