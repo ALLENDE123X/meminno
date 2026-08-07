@@ -14,7 +14,11 @@ import { logger } from '@/lib/logger'
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get('code')
-  const next = searchParams.get('next') ?? '/'
+  // MEM-008: default landing spot after a real sign-in is now the document
+  // library (app/dashboard/page.tsx), not the marketing page at "/" — a
+  // signed-in visitor has no reason to land back on the pre-signup landing
+  // page. `next` is still respected when explicitly passed.
+  const next = searchParams.get('next') ?? '/dashboard'
 
   if (code) {
     const supabase = await createClient()

@@ -44,13 +44,18 @@ const STEPS = [
 
 export default function Home() {
   return (
-    // Forced light theme regardless of OS preference: components/ui/card.tsx
-    // already hard-codes white/black with no dark-mode awareness, and
-    // components/ui/button.tsx's default variant (bg-black) has poor
-    // contrast against the dark-mode body background from globals.css.
-    // Keeping this marketing page a single consistent theme avoids fighting
-    // that mismatch rather than patching either shared primitive.
-    <main className="flex min-h-screen flex-col bg-white text-black">
+    // Forced light theme regardless of the app's new default dark/coral
+    // theme (MEM-008): components/ui/card.tsx and button.tsx now read
+    // dark-charcoal/coral CSS custom properties from app/globals.css by
+    // default (the app-wide theme from here on), but this page was
+    // deliberately shipped forced-light (MEM-010, its original comment
+    // here) and isn't in MEM-008's explicit retrofit list (/upload,
+    // /dashboard/stats) — a marketing-site redesign is a separate decision
+    // from wiring up the in-app dark theme. `theme-light` (see
+    // app/globals.css) scopes the *original* light token values back onto
+    // this subtree so Card/Button render exactly as before, instead of
+    // silently inheriting dark-on-dark from the new global default.
+    <main className="theme-light flex min-h-screen flex-col bg-white text-black">
       <header className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-6">
         <span className="text-lg font-semibold tracking-tight">Meminno</span>
         <a href="#waitlist" className={buttonVariants({ variant: "outline", size: "sm" })}>

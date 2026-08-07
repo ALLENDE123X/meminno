@@ -49,8 +49,10 @@ export default function SignInPage() {
   }
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-white px-6 text-black">
-      <Link href="/" className="mb-8 text-lg font-semibold tracking-tight">
+    // MEM-008: dark/coral theme now applies by default (app/globals.css) —
+    // this page no longer needs to force its own light colors.
+    <main className="flex min-h-screen flex-col items-center justify-center px-6">
+      <Link href="/" className="mb-8 text-lg font-semibold tracking-tight text-accent">
         Meminno
       </Link>
       <Card className="w-full max-w-sm">
@@ -73,12 +75,12 @@ export default function SignInPage() {
                 placeholder="you@college.edu"
                 aria-label="Email address"
                 disabled={status === 'loading'}
-                className="h-11 w-full rounded-md border border-gray-300 bg-white px-4 text-sm text-black placeholder:text-gray-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black disabled:opacity-50"
+                className="h-11 w-full rounded-md border border-border bg-muted px-4 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
               />
               <Button type="submit" size="lg" disabled={status === 'loading'}>
                 {status === 'loading' ? 'Sending…' : 'Send magic link'}
               </Button>
-              {status === 'error' && message ? <p className="text-sm text-red-600">{message}</p> : null}
+              {status === 'error' && message ? <p className="text-sm text-destructive">{message}</p> : null}
             </form>
           </CardContent>
         )}

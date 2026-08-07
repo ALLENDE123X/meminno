@@ -1,26 +1,81 @@
 @import "tailwindcss";
 
+/* MEM-008 (Core UI): Meminno's actual brand theme, applied as real design
+ * tokens rather than a one-off page's inline styles — dark/charcoal base,
+ * ONE warm coral-orange accent, off-white body text, a muted warm-gray for
+ * secondary UI. Deliberately distinct from Turbo AI's light/blue look and
+ * from sibling project Propinno's own golden/burnt-orange accent, and
+ * deliberately NOT monospace/terminal-coded — the audience is university
+ * *and* high-school students, not just CS majors, so this should read as a
+ * general study tool, not a dev tool.
+ *
+ * Unconditional (not gated behind `prefers-color-scheme`) — this dark
+ * palette IS the product's identity now, not an optional dark-mode toggle,
+ * so it lives directly in :root rather than a media query.
+ *
+ * `@theme inline` (not a plain `@theme` block) is load-bearing: it makes
+ * Tailwind's generated utilities (`bg-card`, `text-muted-foreground`, etc.)
+ * reference the CSS custom properties below via `var(...)` at runtime
+ * instead of baking a literal value in at build time. That's what lets
+ * app/page.tsx's `.theme-light` override (bottom of this file) work — see
+ * its comment for why the shipped MEM-010 marketing page needs one.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #121012;
+  --foreground: #f4eee7;
+  --card: #1a1716;
+  --card-foreground: #f4eee7;
+  --border: #2c2724;
+  --muted: #221e1b;
+  --muted-foreground: #a89e94;
+  --accent: #ff6b4a;
+  --accent-foreground: #200e08;
+  --destructive: #e5484d;
+  --destructive-foreground: #fff5f4;
+  --ring: #ff6b4a;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-border: var(--border);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-ring: var(--ring);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Scoped light-theme override for app/page.tsx (MEM-010's marketing
+ * landing page) only. That page was deliberately built forced-light
+ * ("Forced light theme regardless of OS preference" — its own header
+ * comment) and out of this ticket's explicit retrofit list (which names
+ * only /upload and /dashboard/stats), so rather than either (a) leaving it
+ * broken now that components/ui/button.tsx and card.tsx read these dark
+ * tokens by default, or (b) silently redesigning a shipped marketing page
+ * this ticket wasn't asked to touch, this class overrides just the tokens
+ * that page's Card/Button usages actually consume back to their original
+ * light values. `@theme inline` above is what makes this override actually
+ * reach the generated `bg-card`/`text-muted-foreground`/etc. utility
+ * classes instead of being shadowed by a build-time-baked value.
+ */
+.theme-light {
+  --foreground: #0a0a0a;
+  --card: #ffffff;
+  --card-foreground: #0a0a0a;
+  --border: #e5e5e5;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
 }
