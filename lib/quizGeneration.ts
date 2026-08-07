@@ -172,6 +172,24 @@ const MAX_INPUT_CHARS = 60_000
 // cap (lib/quizLimits.ts) is sized assuming a low per-call cost.
 const MODEL = 'gpt-4o-mini'
 
+// Issue #24 (maxDuration audit, 2026-08-07) — same reasoning as
+// lib/notesGeneration.ts/lib/flashcardsGeneration.ts's OPENAI_TIMEOUT_MS/
+// OPENAI_MAX_RETRIES, but the numbers matter more here: this module's own
+// MAX_ATTEMPTS retry (below, MEM-007-fix/issue #26) means a hung upstream
+// call is hit up to twice, on top of whatever the openai SDK's own defaults
+// (10-minute timeout, 2 retries per attempt) would already compound to. Left
+// unconfigured, a genuinely hung call could tie this function up for close
+// to an hour (2 outer attempts x 3 SDK-level attempts x 10 minutes) before
+// ever giving up - the platform would kill the function long before the SDK
+// itself would, and the caller would get an opaque timeout instead of the
+// typed `api_error` result this module already handles. With these values,
+// worst case is MAX_ATTEMPTS x (OPENAI_MAX_RETRIES + 1) x OPENAI_TIMEOUT_MS
+// = 2 x 2 x 20s = 80s, comfortably inside app/api/notes/[id]/quiz/route.ts's
+// 120s maxDuration alongside the session/DB/Redis overhead around both
+// attempts (notes + flashcards lookups, budget claim, final insert).
+const OPENAI_TIMEOUT_MS = 20_000
+const OPENAI_MAX_RETRIES = 1
+
 /** A flashcard's front/back pair, the shape lib/db/schema.ts's `flashcards` table stores. */
 export type QuizInputFlashcard = { front: string; back: string }
 
@@ -385,7 +403,7 @@ export async function generateQuizFromContent(
   }
 
   const sourceText = buildPromptText(trimmed, flashcards)
-  const client = new OpenAI({ apiKey })
+  const client = new OpenAI({ apiKey, timeout: OPENAI_TIMEOUT_MS, maxRetries: OPENAI_MAX_RETRIES })
 
   let result = await attemptGenerateQuiz(client, sourceText)
   for (let attempt = 2; attempt <= MAX_ATTEMPTS && !result.success && result.reason === 'invalid_response'; attempt++) {

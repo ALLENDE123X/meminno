@@ -16,7 +16,7 @@ vi.mock('@/lib/db', () => ({
   withUserContext: vi.fn(),
 }))
 vi.mock('@/lib/stripe', () => ({
-  stripe: { checkout: { sessions: { create: vi.fn() } } },
+  stripe: { checkout: { sessions: { create: vi.fn() } }, subscriptions: { retrieve: vi.fn() } },
 }))
 vi.mock('@/lib/billing', async () => {
   const actual = await vi.importActual<typeof import('@/lib/billing')>('@/lib/billing')
@@ -38,6 +38,7 @@ vi.mock('next/headers', () => ({
 const getSessionUserMock = vi.mocked(getSessionUser)
 const withUserContextMock = vi.mocked(withUserContext)
 const checkoutSessionsCreateMock = vi.mocked(stripe.checkout.sessions.create)
+const subscriptionsRetrieveMock = vi.mocked(stripe.subscriptions.retrieve)
 const cancelStripeSubscriptionMock = vi.mocked(cancelStripeSubscription)
 const limitRequestMock = vi.mocked(limitRequest)
 
@@ -63,6 +64,11 @@ describe('app/billing/actions', () => {
     updateSets.length = 0
     limitRequestMock.mockResolvedValue({ success: true, limit: 10, remaining: 9, reset: 0 })
     mockHeaders()
+    subscriptionsRetrieveMock.mockResolvedValue({
+      cancel_at_period_end: false,
+      items: { data: [{ current_period_end: null }] },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
     withUserContextMock.mockImplementation(async (_userId, fn) => {
       const fakeTx = {
         select: () => ({ from: () => ({ where: () => Promise.resolve(selectResult) }) }),
@@ -91,15 +97,39 @@ describe('app/billing/actions', () => {
 
       const status = await getBillingStatus()
 
-      expect(status).toEqual({ plan: 'monthly', hasSubscription: true })
+      expect(status).toEqual({ plan: 'monthly', hasSubscription: true, cancelAtPeriodEnd: false, currentPeriodEnd: null })
       expect(withUserContextMock).toHaveBeenCalledWith(USER_ID, expect.any(Function))
+      expect(subscriptionsRetrieveMock).toHaveBeenCalledWith('sub_1')
     })
 
-    it('reports hasSubscription: false for a free user with no subscription id', async () => {
+    it('reports hasSubscription: false for a free user with no subscription id, and never calls Stripe', async () => {
       getSessionUserMock.mockResolvedValue({ ok: true, userId: USER_ID, plan: 'free' })
       selectResult = [{ plan: 'free', stripeSubscriptionId: null }]
 
-      expect(await getBillingStatus()).toEqual({ plan: 'free', hasSubscription: false })
+      expect(await getBillingStatus()).toEqual({ plan: 'free', hasSubscription: false, cancelAtPeriodEnd: false, currentPeriodEnd: null })
+      expect(subscriptionsRetrieveMock).not.toHaveBeenCalled()
+    })
+
+    it('reports a scheduled cancellation and its period end, live-read from Stripe (not stored in the DB)', async () => {
+      getSessionUserMock.mockResolvedValue({ ok: true, userId: USER_ID, plan: 'semester' })
+      selectResult = [{ plan: 'semester', stripeSubscriptionId: 'sub_1' }]
+      subscriptionsRetrieveMock.mockResolvedValue({
+        cancel_at_period_end: true,
+        items: { data: [{ current_period_end: 1_800_000_000 }] },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any)
+
+      const status = await getBillingStatus()
+
+      expect(status).toEqual({ plan: 'semester', hasSubscription: true, cancelAtPeriodEnd: true, currentPeriodEnd: 1_800_000_000 })
+    })
+
+    it('fails closed to "not scheduled to cancel" when the Stripe read itself fails', async () => {
+      getSessionUserMock.mockResolvedValue({ ok: true, userId: USER_ID, plan: 'monthly' })
+      selectResult = [{ plan: 'monthly', stripeSubscriptionId: 'sub_1' }]
+      subscriptionsRetrieveMock.mockRejectedValue(new Error('network'))
+
+      expect(await getBillingStatus()).toEqual({ plan: 'monthly', hasSubscription: true, cancelAtPeriodEnd: false, currentPeriodEnd: null })
     })
   })
 
@@ -172,26 +202,27 @@ describe('app/billing/actions', () => {
       expect(cancelStripeSubscriptionMock).not.toHaveBeenCalled()
     })
 
-    it('cancels at Stripe FIRST, then sets plan free + clears the subscription id', async () => {
+    it('schedules cancellation at Stripe and does NOT touch the DB — plan stays until Stripe fires customer.subscription.deleted at period end', async () => {
       getSessionUserMock.mockResolvedValue({ ok: true, userId: USER_ID, plan: 'monthly' })
       selectResult = [{ stripeSubscriptionId: 'sub_1' }]
-      cancelStripeSubscriptionMock.mockResolvedValue(undefined)
+      cancelStripeSubscriptionMock.mockResolvedValue({ currentPeriodEnd: 1_800_000_000 })
 
       const res = await cancelSubscription()
 
-      expect(res).toEqual({ success: true })
+      expect(res).toEqual({ success: true, currentPeriodEnd: 1_800_000_000 })
       expect(cancelStripeSubscriptionMock).toHaveBeenCalledWith('sub_1')
-      expect(updateSets).toEqual([{ plan: 'free', stripeSubscriptionId: null }])
+      expect(updateSets).toHaveLength(0)
     })
 
-    it('is a no-op cancel-at-Stripe call when the user has no stored subscription id, but still normalizes the row', async () => {
+    it('is a no-op when the user has no stored subscription id', async () => {
       getSessionUserMock.mockResolvedValue({ ok: true, userId: USER_ID, plan: 'free' })
       selectResult = [{ stripeSubscriptionId: null }]
 
-      await cancelSubscription()
+      const res = await cancelSubscription()
 
       expect(cancelStripeSubscriptionMock).not.toHaveBeenCalled()
-      expect(updateSets).toEqual([{ plan: 'free', stripeSubscriptionId: null }])
+      expect(res).toEqual({ success: true, currentPeriodEnd: null })
+      expect(updateSets).toHaveLength(0)
     })
 
     it('does NOT touch the DB when the Stripe cancel call fails — never claims billing stopped when it did not', async () => {

@@ -55,10 +55,25 @@
  * during this ticket's verification, see the PR description); the
  * stale-event guard (never let a redelivered event for a subscription the
  * user has since replaced stomp the current one); `cancelStripeSubscription`
- * cancelling immediately (not at period end) and being idempotent; and
- * `invoice.paid` deliberately NOT also being handled (same event as
- * `invoice.payment_succeeded` for a renewal — subscribing to both would
- * double-process every cycle).
+ * being idempotent; and `invoice.paid` deliberately NOT also being handled
+ * (same event as `invoice.payment_succeeded` for a renewal — subscribing to
+ * both would double-process every cycle).
+ *
+ * ONE MORE DEVIATION, added post-review (merge-evaluation of this PR, see
+ * ARCHITECTURE.md): `cancelStripeSubscription` schedules cancellation at
+ * period end (`cancel_at_period_end: true`) instead of cancelling
+ * immediately like Propinno's version. Propinno's immediate cancel is
+ * correct there because it's triggered by "I found a place" — a
+ * user-declared completion event where continuing access serves no purpose.
+ * Meminno's "Cancel subscription" button has no such signal; it is a plain
+ * account action, and cancelling immediately would forfeit the rest of a
+ * period the user already paid for (up to ~4 months on the Semester plan)
+ * with no refund — a real consumer-disclosure problem on a live-money path,
+ * not just a UX nitpick. `cancel_at_period_end` is the industry-standard
+ * fix: no further charge is ever attempted, and `plan` only reverts to
+ * 'free' once Stripe itself fires `customer.subscription.deleted` at the
+ * actual end of the period — `handleSubscriptionDeleted` below already
+ * handles that correctly and needed no changes for this.
  *
  * API-VERSION NOTE (`2026-07-29.dahlia`, see lib/stripe.ts — a slightly
  * newer `.dahlia` pin than Propinno's own `2026-05-27.dahlia`, inherited
@@ -107,26 +122,46 @@ export function subscriptionIdFromInvoice(invoice: Stripe.Invoice): string | nul
 }
 
 /**
- * Cancel a Stripe subscription IMMEDIATELY (not at period end) so no further
- * charge is ever attempted. Idempotent: a subscription that is already gone
- * or already canceled resolves successfully rather than throwing, so a user
- * who double-clicks "Cancel subscription" doesn't get an error.
- *
- * Anything else genuinely rethrows — callers MUST NOT record "canceled"
- * state on a failure, because the subscription would still be live and
- * billing. Identical to Propinno's version (same file, same reasoning).
+ * A subscription's items[0].current_period_end (unix seconds), or null if
+ * unavailable. On this API version (`2026-07-29.dahlia`), Stripe moved
+ * `current_period_end` off the Subscription root onto each line item — a
+ * subscription can have multiple items with independent billing cycles —
+ * verified against the installed `stripe` package's own type definitions
+ * (`SubscriptionItem.current_period_end`), not assumed. Meminno only ever
+ * creates single-item subscriptions (one price per checkout), so items[0]
+ * is always the one that matters here.
  */
-export async function cancelStripeSubscription(subscriptionId: string): Promise<void> {
+export function currentPeriodEndFromSubscription(subscription: Stripe.Subscription): number | null {
+  return subscription.items?.data?.[0]?.current_period_end ?? null
+}
+
+export type CancelResult = { currentPeriodEnd: number | null }
+
+/**
+ * Schedule a Stripe subscription to cancel at the END of its current
+ * billing period (see the file header's "ONE MORE DEVIATION" note for why
+ * this isn't an immediate cancel like Propinno's). No further charge is
+ * ever attempted once this succeeds. Idempotent: a subscription that is
+ * already gone or already canceled resolves successfully rather than
+ * throwing, so a user who double-clicks "Cancel subscription" doesn't get
+ * an error — and calling this twice on a subscription already scheduled to
+ * cancel is harmless (Stripe just re-confirms the same flag).
+ *
+ * Anything else genuinely rethrows — callers MUST NOT record a "canceled"
+ * state on a failure, because the subscription would still be live and
+ * billing.
+ */
+export async function cancelStripeSubscription(subscriptionId: string): Promise<CancelResult> {
   try {
-    await stripe.subscriptions.cancel(subscriptionId)
-    return
+    const updated = await stripe.subscriptions.update(subscriptionId, { cancel_at_period_end: true })
+    return { currentPeriodEnd: currentPeriodEndFromSubscription(updated) }
   } catch (err) {
-    if (stripeErrorCode(err) === 'resource_missing') return
+    if (stripeErrorCode(err) === 'resource_missing') return { currentPeriodEnd: null }
     try {
       const existing = await stripe.subscriptions.retrieve(subscriptionId)
-      if (existing.status === 'canceled') return
+      if (existing.status === 'canceled') return { currentPeriodEnd: null }
     } catch {
-      // fall through and rethrow the original cancel error
+      // fall through and rethrow the original error
     }
     throw err
   }

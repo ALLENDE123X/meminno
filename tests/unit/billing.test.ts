@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // --- Stripe SDK mock -------------------------------------------------------
-const mockSubscriptionsCancel = vi.fn()
+const mockSubscriptionsUpdate = vi.fn()
 const mockSubscriptionsRetrieve = vi.fn()
 vi.mock('@/lib/stripe', () => ({
   stripe: {
     subscriptions: {
-      cancel: (...args: unknown[]) => mockSubscriptionsCancel(...args),
+      update: (...args: unknown[]) => mockSubscriptionsUpdate(...args),
       retrieve: (...args: unknown[]) => mockSubscriptionsRetrieve(...args),
     },
   },
@@ -58,6 +58,7 @@ vi.mock('@/lib/db', () => ({
 import {
   handleStripeWebhookEvent,
   cancelStripeSubscription,
+  currentPeriodEndFromSubscription,
   subscriptionIdFromInvoice,
   priceIdForPlan,
 } from '@/lib/billing'
@@ -65,12 +66,16 @@ import {
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const SUB_ID = 'sub_test_123'
 const CUSTOMER_ID = 'cus_test_123'
+const PERIOD_END = 1_800_000_000 // arbitrary unix seconds, only used for equality checks
 
-function subscriptionObject(overrides: Partial<{ id: string; status: string; metadata: Record<string, string> }> = {}) {
+function subscriptionObject(
+  overrides: Partial<{ id: string; status: string; metadata: Record<string, string>; currentPeriodEnd: number | null }> = {}
+) {
   return {
     id: overrides.id ?? SUB_ID,
     status: overrides.status ?? 'active',
     metadata: overrides.metadata ?? { userId: USER_ID, plan: 'monthly' },
+    items: { data: [{ current_period_end: overrides.currentPeriodEnd ?? PERIOD_END }] },
   }
 }
 
@@ -85,7 +90,7 @@ beforeEach(() => {
   selectRows.length = 0
   updates.length = 0
   mockSubscriptionsRetrieve.mockResolvedValue(subscriptionObject())
-  mockSubscriptionsCancel.mockResolvedValue({ id: SUB_ID, status: 'canceled' })
+  mockSubscriptionsUpdate.mockResolvedValue(subscriptionObject({ status: 'active' }))
   delete process.env.STRIPE_PRICE_MONTHLY
   delete process.env.STRIPE_PRICE_SEMESTER
 })
@@ -121,26 +126,37 @@ describe('subscriptionIdFromInvoice', () => {
 })
 
 describe('cancelStripeSubscription', () => {
-  it('cancels immediately', async () => {
-    await cancelStripeSubscription(SUB_ID)
-    expect(mockSubscriptionsCancel).toHaveBeenCalledWith(SUB_ID)
+  it('schedules cancellation at period end (not an immediate cancel) and returns when access ends', async () => {
+    const result = await cancelStripeSubscription(SUB_ID)
+    expect(mockSubscriptionsUpdate).toHaveBeenCalledWith(SUB_ID, { cancel_at_period_end: true })
+    expect(result).toEqual({ currentPeriodEnd: PERIOD_END })
   })
 
   it('is idempotent when the subscription no longer exists', async () => {
-    mockSubscriptionsCancel.mockRejectedValue(Object.assign(new Error('No such subscription'), { code: 'resource_missing' }))
-    await expect(cancelStripeSubscription(SUB_ID)).resolves.toBeUndefined()
+    mockSubscriptionsUpdate.mockRejectedValue(Object.assign(new Error('No such subscription'), { code: 'resource_missing' }))
+    await expect(cancelStripeSubscription(SUB_ID)).resolves.toEqual({ currentPeriodEnd: null })
   })
 
   it('is idempotent when the subscription is already canceled', async () => {
-    mockSubscriptionsCancel.mockRejectedValue(new Error('cannot be canceled'))
+    mockSubscriptionsUpdate.mockRejectedValue(new Error('cannot be updated'))
     mockSubscriptionsRetrieve.mockResolvedValue(subscriptionObject({ status: 'canceled' }))
-    await expect(cancelStripeSubscription(SUB_ID)).resolves.toBeUndefined()
+    await expect(cancelStripeSubscription(SUB_ID)).resolves.toEqual({ currentPeriodEnd: null })
   })
 
   it('RETHROWS when the subscription is still live — callers must not record "canceled"', async () => {
-    mockSubscriptionsCancel.mockRejectedValue(new Error('Stripe is down'))
+    mockSubscriptionsUpdate.mockRejectedValue(new Error('Stripe is down'))
     mockSubscriptionsRetrieve.mockResolvedValue(subscriptionObject({ status: 'active' }))
     await expect(cancelStripeSubscription(SUB_ID)).rejects.toThrow('Stripe is down')
+  })
+})
+
+describe('currentPeriodEndFromSubscription', () => {
+  it('reads items.data[0].current_period_end (moved off the Subscription root on this API version)', () => {
+    expect(currentPeriodEndFromSubscription(subscriptionObject({ currentPeriodEnd: PERIOD_END }) as never)).toBe(PERIOD_END)
+  })
+
+  it('returns null when there are no subscription items', () => {
+    expect(currentPeriodEndFromSubscription({ items: { data: [] } } as never)).toBeNull()
   })
 })
 

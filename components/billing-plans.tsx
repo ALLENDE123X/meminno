@@ -65,13 +65,33 @@ function PlanCard({
   )
 }
 
+function formatPeriodEnd(unixSeconds: number): string {
+  return new Date(unixSeconds * 1000).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+}
+
 function CurrentPlanCard({ status, onCancel, loading }: { status: BillingStatus; onCancel: () => void; loading: boolean }) {
+  if (status.cancelAtPeriodEnd) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>{PLAN_LABEL[status.plan] ?? status.plan} plan — cancellation scheduled</CardTitle>
+          <CardDescription>
+            {status.currentPeriodEnd
+              ? `You won't be charged again. You'll keep your ${PLAN_LABEL[status.plan] ?? status.plan} access through ${formatPeriodEnd(status.currentPeriodEnd)}, then your plan will end.`
+              : "You won't be charged again. Your access continues until the end of the current billing period, then your plan will end."}
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    )
+  }
+
   return (
     <Card>
       <CardHeader>
         <CardTitle>{PLAN_LABEL[status.plan] ?? status.plan} plan</CardTitle>
         <CardDescription>
-          Renews automatically until you cancel. Cancelling stops the next charge immediately — you won&apos;t be billed again.
+          Renews automatically until you cancel. Cancelling stops future billing, but you keep your paid access through the end of the
+          current billing period — no refund for the remaining time, and no charge after that.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -139,9 +159,16 @@ function BillingContent({ initialStatus }: { initialStatus: BillingStatus }) {
     setLoading('cancel')
     setMessage(null)
     try {
-      await cancelSubscription()
-      setStatus({ plan: 'free', hasSubscription: false })
-      setMessage({ text: 'Subscription canceled — you will not be charged again.' })
+      const res = await cancelSubscription()
+      // Access continues until the period actually ends (see
+      // app/billing/actions.ts's cancelSubscription() header comment) — the
+      // plan itself is unchanged here, only the cancellation schedule is.
+      setStatus((prev) => ({ ...prev, cancelAtPeriodEnd: true, currentPeriodEnd: res.currentPeriodEnd }))
+      setMessage({
+        text: res.currentPeriodEnd
+          ? `Cancellation scheduled. You won't be charged again, and you'll keep access through ${formatPeriodEnd(res.currentPeriodEnd)}.`
+          : "Cancellation scheduled — you won't be charged again.",
+      })
     } catch (err) {
       setMessage({ text: err instanceof Error ? err.message : 'Something went wrong.', error: true })
     } finally {

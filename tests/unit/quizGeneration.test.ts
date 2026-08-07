@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { logger } from '@/lib/logger'
 
 const mockCreate = vi.fn()
+// Issue #24 (maxDuration audit): captures every `new OpenAI(...)`
+// constructor call's options so tests can assert the client-side
+// timeout/retry budget without needing a real slow/hung network call. Same
+// hoisting-safe pattern as `mockCreate` itself.
+const constructorCalls: Array<Record<string, unknown>> = []
 
 // Mirrors tests/unit/notesGeneration.test.ts / tests/unit/flashcardsGeneration.test.ts's
 // pattern for mocking a class-based SDK client: the `openai` module's
@@ -10,6 +15,9 @@ const mockCreate = vi.fn()
 vi.mock('openai', () => ({
   default: class MockOpenAI {
     chat = { completions: { create: mockCreate } }
+    constructor(options: Record<string, unknown>) {
+      constructorCalls.push(options)
+    }
   },
 }))
 
@@ -123,6 +131,7 @@ describe('generateQuizFromContent', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    constructorCalls.length = 0
     process.env.OPENAI_API_KEY = ORIGINAL_ENV
   })
 
@@ -333,6 +342,56 @@ describe('generateQuizFromContent', () => {
     const result = await generateQuizFromContent(VALID_NOTES_JSON, [])
     expect(result.success).toBe(false)
     if (!result.success) expect(result.reason).toBe('api_error')
+    expect(logger.error).toHaveBeenCalled()
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+  })
+
+  // Issue #24 (maxDuration audit): this module's own MAX_ATTEMPTS retry
+  // (above) means a hung upstream call could otherwise be hit twice, on top
+  // of the openai SDK's own defaults (10-minute timeout, 2 retries per
+  // attempt) - by far the worst-case compounding of the three generation
+  // modules, and the reason app/api/notes/[id]/quiz/route.ts needs the
+  // largest maxDuration (120s) of the three routes. Pins that the client is
+  // actually constructed with a tight, explicit budget, and that it's
+  // constructed exactly once and reused across both attempts rather than
+  // reconstructed per attempt (constructorCalls would show >1 entry if it
+  // were rebuilding the client on each retry).
+  it('constructs the OpenAI client once, with an explicit request timeout and bounded retries, reused across attempts', async () => {
+    process.env.OPENAI_API_KEY = 'test-key'
+    mockCreate
+      .mockResolvedValueOnce(toolCallResponse({ questions: makeQuestions(2) })) // first: too few questions
+      .mockResolvedValueOnce(toolCallResponse({ questions: makeQuestions(7) })) // second: valid
+
+    const result = await generateQuizFromContent(VALID_NOTES_JSON, [])
+
+    expect(result.success).toBe(true)
+    expect(mockCreate).toHaveBeenCalledTimes(2)
+    expect(constructorCalls).toHaveLength(1)
+    expect(constructorCalls[0]).toMatchObject({ apiKey: 'test-key', timeout: 20_000, maxRetries: 1 })
+  })
+
+  // Simulates the exact scenario this ticket exists to fix: an upstream call
+  // that hangs/times out rather than erroring instantly. Without a
+  // client-side timeout this could hang for close to an hour in the worst
+  // case (this module's own 2 attempts x the SDK's own 3 internal attempts x
+  // 10 minutes); with one, each attempt surfaces as a normal api_error
+  // rejection like any other network failure - and since api_error is not
+  // retried (only invalid_response is, see the MAX_ATTEMPTS comment above),
+  // a hung call fails fast after a single attempt, and the route maps that
+  // to a clean 502 instead of the platform killing the function opaquely.
+  it('degrades to the typed "api_error" result when the OpenAI call times out (simulating a hung upstream call), without retrying', async () => {
+    process.env.OPENAI_API_KEY = 'test-key'
+    const timeoutError = new Error('Request timed out.')
+    timeoutError.name = 'APIConnectionTimeoutError'
+    mockCreate.mockRejectedValueOnce(timeoutError)
+
+    const result = await generateQuizFromContent(VALID_NOTES_JSON, [])
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.reason).toBe('api_error')
+      expect(result.message).toMatch(/something went wrong/i)
+    }
     expect(logger.error).toHaveBeenCalled()
     expect(mockCreate).toHaveBeenCalledTimes(1)
   })

@@ -41,7 +41,9 @@ export default async function BillingPage() {
         <p className="text-muted-foreground">Subscribe for higher daily limits, or manage your current plan.</p>
       </div>
 
-      <BillingPlans initialStatus={status ?? { plan: 'free', hasSubscription: false }} />
+      <BillingPlans
+        initialStatus={status ?? { plan: 'free', hasSubscription: false, cancelAtPeriodEnd: false, currentPeriodEnd: null }}
+      />
     </main>
   )
 }

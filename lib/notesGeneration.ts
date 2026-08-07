@@ -151,6 +151,24 @@ const MAX_INPUT_CHARS = 60_000
 // cost (see lib/notesLimits.ts).
 const MODEL = 'gpt-4o-mini'
 
+// Issue #24 (maxDuration audit, 2026-08-07): the openai SDK's own defaults
+// are `timeout: 600_000` (10 minutes) and `maxRetries: 2` per HTTP attempt -
+// "note that request timeouts are retried by default, so in a worst-case
+// scenario you may wait much longer than this timeout" (the SDK's own
+// doc comment on `timeout`). Left unconfigured, a genuinely hung OpenAI call
+// could tie up this function for up to ~30 minutes (3 attempts x 10 minutes)
+// before the SDK itself would ever give up - far longer than any sane
+// `maxDuration` on app/api/documents/[id]/notes/route.ts, so a hung call
+// would be killed opaquely by the platform instead of returning the typed
+// `api_error` result this module already handles and app/api/documents/
+// [id]/notes/route.ts already maps to a clean 502. An explicit, much
+// tighter timeout/retry budget here means that path is what actually fires:
+// worst case is OPENAI_MAX_RETRIES + 1 attempts x OPENAI_TIMEOUT_MS = 2 x
+// 20s = 40s, comfortably inside the route's 60s maxDuration alongside the
+// session/DB/Redis overhead around this call.
+const OPENAI_TIMEOUT_MS = 20_000
+const OPENAI_MAX_RETRIES = 1
+
 /**
  * Generates structured study notes from `rawText` via OpenAI forced
  * tool-use, zod-validates the result, and never throws - every failure mode
@@ -180,7 +198,7 @@ export async function generateNotesFromText(rawText: string): Promise<GenerateNo
   const sourceText = trimmed.length > MAX_INPUT_CHARS ? trimmed.slice(0, MAX_INPUT_CHARS) : trimmed
 
   try {
-    const client = new OpenAI({ apiKey })
+    const client = new OpenAI({ apiKey, timeout: OPENAI_TIMEOUT_MS, maxRetries: OPENAI_MAX_RETRIES })
     const completion = await client.chat.completions.create({
       model: MODEL,
       messages: [
