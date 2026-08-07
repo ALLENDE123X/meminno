@@ -151,9 +151,11 @@ The design that replaced it is in "Two-role database architecture" above. Note w
 - **Inngest:** not yet provisioned for this project. `INNGEST_EVENT_KEY`/`INNGEST_SIGNING_KEY` documented but unset.
 - **Sentry / Axiom:** not yet provisioned. Documented but unset; decide later whether to reuse Propinno's or create dedicated ones.
 
-## Pricing (TBD numbers finalized in MEM-004)
+## Pricing
 
-Two paid tiers plus a capped free tier, mirroring TurboLearn's model: **$17.99/month** and **$59.99/semester**. Free tier: PDF upload or text-paste only for v1 (no audio/video transcription yet — that's a Phase 2 parity item), with capped uploads/generations/chat-messages per month. Exact cap numbers are TBD, to be set in MEM-004 alongside the actual Stripe wiring — don't invent numbers before that ticket.
+Two paid tiers plus a capped free tier, mirroring TurboLearn's model: **$17.99/month** and **$59.99/semester**. Free tier: PDF upload or text-paste only for v1 (no audio/video transcription yet — that's a Phase 2 parity item).
+
+**Upload caps are now finalized** (real GitHub issue #4, "MEM-004: Upload flow + rate limiting" — see `ARCHITECTURE.md`'s MEM-004 entry and `lib/uploadLimits.ts` for the full reasoning): **5 uploads/day free**, **50/day paid** (a sanity ceiling, not a real product limit), plus a 500/day platform-wide ceiling across all users. Generation/chat-message caps (notes/flashcards/quiz/chat, MEM-006+) are still TBD — set those when each of those endpoints actually ships, following the same `lib/ratelimit.ts` + `lib/aiBudget.ts` two-layer pattern. Actual Stripe subscription wiring (checkout, webhooks) is separate, unstarted work — see the numbering note below.
 
 ## Ticket priority
 
@@ -164,7 +166,7 @@ Two paid tiers plus a capped free tier, mirroring TurboLearn's model: **$17.99/m
 1. ~~**MEM-001** — Repo + infra scaffold~~ SHIPPED, direct-to-`main` (HARD STOP 1's bootstrap exception). Next.js/Drizzle/Supabase/Vercel scaffold, CI wired to `drizzle-kit migrate`, dedicated Supabase + Vercel projects, Upstash Redis reused with `meminno-` namespacing.
 2. ~~**MEM-002** — Core data schema + RLS~~ SHIPPED (PR #13, folded with MEM-002-fix/issue #14 before merge — see "Two-role database architecture" above). Real schema (users, documents, notes, flashcards, quizzes, quiz_attempts) with RLS on every user table. Supabase Auth wiring itself was carved out to its own ticket (MEM-003), not included here.
 3. ~~**MEM-003** — Auth~~ SHIPPED. Magic-link Supabase Auth (`app/sign-in`, `app/auth/callback`), `lib/session.ts`'s `getSessionUser()` session-gate helper, `public.users` row creation on every session resolution, `proxy.ts` session refresh, first real protected route (`app/api/me`). Live-verified end to end against the real project — see `ARCHITECTURE.md`'s Auth section.
-4. **MEM-004** — Upload flow + rate limiting. PDF upload + raw text paste (v1 scope only), Supabase Storage, text extraction pipeline.
+4. ~~**MEM-004** — Upload flow + rate limiting~~ SHIPPED. Real `POST /api/documents` (PDF via `unpdf` text extraction, or raw text paste — v1 scope only), reconciled onto MEM-003's `lib/session.ts` (added Bearer-token support + `plan` back onto it) rather than keeping a separate copy. Two-layer rate limiting (burst + per-user daily cap, tiered by plan, plus a platform-wide ceiling) via `lib/uploadLimits.ts`. **No Supabase Storage integration** — text is extracted synchronously at upload time and stored directly in `documents.raw_text`; the original PDF binary isn't persisted. See `ARCHITECTURE.md`'s MEM-004 entry for the full reasoning and gaps.
 5. **MEM-005** — AI notes generation. OpenAI-powered structured notes from ingested content. Two-layer rate limiting (HARD STOP 6) applies starting here — this is the first AI-generation endpoint.
 6. **MEM-006** — AI flashcards generation. Flashcard generation from notes/content, spaced-repetition-ready data model.
 7. **MEM-007** — AI quiz generation. Quiz generation, scoring, results view.
