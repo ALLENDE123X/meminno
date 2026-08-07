@@ -171,7 +171,7 @@ Two paid tiers plus a capped free tier, mirroring TurboLearn's model: **$17.99/m
 6. **MEM-006** — AI flashcards generation. Flashcard generation from notes/content, spaced-repetition-ready data model.
 7. **MEM-007** — AI quiz generation. Quiz generation, scoring, results view.
 8. **MEM-008** — Core UI. Onboarding/dashboard shell, document library — the general in-app UI that MEM-003 through MEM-007 build data/API support for without a home yet (the marketing site at `/` is MEM-010, already shipped, and is not this).
-9. **MEM-009** — Stat card differentiator. Auto-generated shareable weekly-progress image (cards reviewed, quizzes taken, streaks) with a share/download flow. The landing page (MEM-010) already advertises this feature; this ticket is what actually builds it.
+9. **MEM-009** — Stat card differentiator. SHIPPED (PR #17). Auto-generated shareable weekly-progress image (documents processed, notes/flashcards/quizzes, streak), HMAC-signed to prevent forged share cards, with a real `/share/stat-card` page carrying correct OG/Twitter meta tags so links actually unfurl richly.
 10. ~~**MEM-010** — Landing page~~ SHIPPED (PR #15, merged 2026-08-07), out of order (Pranav-requested). Hero, features, how-it-works, pricing, a real Redis-backed email waitlist capture (since MEM-003/008 weren't built yet at the time), `/privacy`.
 11. **MEM-011** — Stripe billing. Subscription checkout for both plans, free-tier cap enforcement, webhook handling. Finalize exact free-tier cap numbers here.
 
