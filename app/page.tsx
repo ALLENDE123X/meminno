@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { WaitlistForm } from "@/components/waitlist-form";
 
 const FEATURES = [
   {
@@ -58,9 +57,9 @@ export default function Home() {
     <main className="theme-light flex min-h-screen flex-col bg-white text-black">
       <header className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-6">
         <span className="text-lg font-semibold tracking-tight">Meminno</span>
-        <a href="#waitlist" className={buttonVariants({ variant: "outline", size: "sm" })}>
-          Join waitlist
-        </a>
+        <Link href="/sign-in" className={buttonVariants({ variant: "outline", size: "sm" })}>
+          Sign in
+        </Link>
       </header>
 
       {/* Hero */}
@@ -72,9 +71,11 @@ export default function Home() {
           Upload a PDF or paste your notes, and Meminno&apos;s AI does the rest, plus builds a shareable stat card
           that tracks your study streak, so you can actually see the work paying off.
         </p>
-        <div id="waitlist" className="mt-10 w-full max-w-md scroll-mt-20">
-          <WaitlistForm />
-          <p className="mt-3 text-sm text-zinc-500">Start free. No credit card required.</p>
+        <div className="mt-10 flex w-full max-w-md flex-col items-center gap-3">
+          <Link href="/sign-in" className={buttonVariants({ className: "w-full" })}>
+            Get started free
+          </Link>
+          <p className="text-sm text-zinc-500">Start free. No credit card required.</p>
         </div>
       </section>
 
@@ -135,9 +136,9 @@ export default function Home() {
             </CardHeader>
             <CardContent>
               <p className="text-3xl font-bold">$0</p>
-              <a href="#waitlist" className={buttonVariants({ variant: "outline", className: "mt-4 w-full" })}>
+              <Link href="/sign-in" className={buttonVariants({ variant: "outline", className: "mt-4 w-full" })}>
                 Start free
-              </a>
+              </Link>
             </CardContent>
           </Card>
           <Card className="border-black">
@@ -149,9 +150,9 @@ export default function Home() {
               <p className="text-3xl font-bold">
                 $17.99<span className="text-base font-normal text-zinc-500">/mo</span>
               </p>
-              <a href="#waitlist" className={buttonVariants({ className: "mt-4 w-full" })}>
-                Join waitlist
-              </a>
+              <Link href="/billing" className={buttonVariants({ className: "mt-4 w-full" })}>
+                Subscribe
+              </Link>
             </CardContent>
           </Card>
           <Card>
@@ -161,11 +162,11 @@ export default function Home() {
             </CardHeader>
             <CardContent>
               <p className="text-3xl font-bold">
-                $59.99<span className="text-base font-normal text-zinc-500">/semester</span>
+                $59.99<span className="text-base font-normal text-zinc-500">/4 months</span>
               </p>
-              <a href="#waitlist" className={buttonVariants({ variant: "outline", className: "mt-4 w-full" })}>
-                Join waitlist
-              </a>
+              <Link href="/billing" className={buttonVariants({ variant: "outline", className: "mt-4 w-full" })}>
+                Subscribe
+              </Link>
             </CardContent>
           </Card>
         </div>
@@ -173,12 +174,14 @@ export default function Home() {
 
       {/* Final CTA */}
       <section className="mx-auto flex w-full max-w-3xl flex-col items-center px-6 py-16 text-center">
-        <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">Be first in when we open up</h2>
+        <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">Ready to study smarter?</h2>
         <p className="mt-3 max-w-lg text-zinc-600">
-          We&apos;re still finishing sign-ups. Drop your email and we&apos;ll let you know the moment you can get in.
+          Sign in with your email and start uploading in under a minute. No credit card required for the free plan.
         </p>
-        <div className="mt-8 w-full max-w-md">
-          <WaitlistForm />
+        <div className="mt-8">
+          <Link href="/sign-in" className={buttonVariants({ size: "lg" })}>
+            Get started free
+          </Link>
         </div>
       </section>
 
