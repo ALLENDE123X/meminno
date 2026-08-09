@@ -13,8 +13,9 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+import { LectureRecorder } from '@/components/lecture-recorder'
 
-type Mode = 'pdf' | 'text'
+type Mode = 'pdf' | 'text' | 'record'
 type Status = 'idle' | 'submitting' | 'success' | 'error'
 
 export function UploadForm() {
@@ -69,7 +70,7 @@ export function UploadForm() {
       <Card>
         <CardHeader>
           <CardTitle>Upload your coursework</CardTitle>
-          <CardDescription>PDF or pasted text. Meminno reads it and stores it as a document.</CardDescription>
+          <CardDescription>PDF, pasted text, or a live lecture recording. Meminno reads it and stores it as a document.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="mb-4 flex gap-2">
@@ -79,38 +80,53 @@ export function UploadForm() {
             <Button type="button" variant={mode === 'text' ? 'default' : 'outline'} size="sm" onClick={() => setMode('text')}>
               Paste text
             </Button>
+            <Button type="button" variant={mode === 'record' ? 'default' : 'outline'} size="sm" onClick={() => setMode('record')}>
+              Record
+            </Button>
           </div>
 
-          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-            <input
-              type="text"
-              placeholder="Title (optional)"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          <input
+            type="text"
+            placeholder="Title (optional)"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            className="mb-4 w-full rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+
+          {mode === 'record' ? (
+            <LectureRecorder
+              title={title}
+              onSaved={(id, savedTitle, charCount) => {
+                setStatus('success')
+                setMessage(`Saved "${savedTitle}" (${charCount.toLocaleString()} characters transcribed).`)
+                setDocumentId(id)
+                setTitle('')
+              }}
             />
+          ) : (
+            <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+              {mode === 'pdf' ? (
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                  className="text-sm text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-muted file:px-3 file:py-2 file:text-sm file:text-foreground"
+                />
+              ) : (
+                <textarea
+                  placeholder="Paste your notes here…"
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  rows={8}
+                  className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
+              )}
 
-            {mode === 'pdf' ? (
-              <input
-                type="file"
-                accept="application/pdf"
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                className="text-sm text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-muted file:px-3 file:py-2 file:text-sm file:text-foreground"
-              />
-            ) : (
-              <textarea
-                placeholder="Paste your notes here…"
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                rows={8}
-                className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              />
-            )}
-
-            <Button type="submit" disabled={status === 'submitting'}>
-              {status === 'submitting' ? 'Uploading…' : 'Upload'}
-            </Button>
-          </form>
+              <Button type="submit" disabled={status === 'submitting'}>
+                {status === 'submitting' ? 'Uploading…' : 'Upload'}
+              </Button>
+            </form>
+          )}
 
           {message ? (
             <p className={`mt-4 text-sm ${status === 'error' ? 'text-destructive' : 'text-accent'}`}>{message}</p>

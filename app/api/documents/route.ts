@@ -25,6 +25,7 @@ const MAX_TEXT_CHARS = 200_000
 type ParsedUpload =
   | { kind: 'pdf'; file: File; title: string }
   | { kind: 'text'; rawText: string; title: string }
+  | { kind: 'recording'; rawText: string; title: string }
 
 /**
  * Parses and cheaply validates the incoming form data (content type, size,
@@ -39,6 +40,14 @@ type ParsedUpload =
 function parseUpload(formData: FormData): ParsedUpload | NextResponse {
   const file = formData.get('file')
   const pastedText = formData.get('text')
+  // Issue #42 (lecture recording): a distinct field from `text`, not just a
+  // different value of the same field, deliberately - so a saved recording
+  // is tagged sourceType='recording' rather than indistinguishable from a
+  // pasted-text upload. The transcript itself is assembled client-side
+  // (components/lecture-recorder.tsx) from multiple already-transcribed
+  // chunks (POST /api/documents/record-chunk) before it ever reaches this
+  // route; this route never talks to OpenAI or handles audio directly.
+  const recordingText = formData.get('recordingText')
   const titleField = formData.get('title')
   const title = typeof titleField === 'string' ? titleField.trim() : ''
 
@@ -63,7 +72,21 @@ function parseUpload(formData: FormData): ParsedUpload | NextResponse {
     return { kind: 'text', rawText, title: title || rawText.slice(0, 60) }
   }
 
-  return NextResponse.json({ error: 'Provide either a PDF file ("file") or pasted text ("text")' }, { status: 400 })
+  if (typeof recordingText === 'string' && recordingText.trim()) {
+    if (recordingText.length > MAX_TEXT_CHARS) {
+      return NextResponse.json(
+        { error: `Recording transcript must be under ${MAX_TEXT_CHARS.toLocaleString()} characters` },
+        { status: 400 }
+      )
+    }
+    const rawText = recordingText.trim()
+    return { kind: 'recording', rawText, title: title || rawText.slice(0, 60) || 'Untitled recording' }
+  }
+
+  return NextResponse.json(
+    { error: 'Provide a PDF file ("file"), pasted text ("text"), or a recording transcript ("recordingText")' },
+    { status: 400 }
+  )
 }
 
 export async function POST(req: Request) {
