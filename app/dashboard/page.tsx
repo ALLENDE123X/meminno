@@ -71,7 +71,8 @@ export default async function DashboardPage() {
                 <div>
                   <p className="font-medium text-card-foreground">{doc.title}</p>
                   <p className="text-sm text-muted-foreground">
-                    {doc.sourceType === 'pdf' ? 'PDF' : 'Pasted text'} · {formatDate(doc.createdAt)}
+                    {doc.sourceType === 'pdf' ? 'PDF' : doc.sourceType === 'recording' ? 'Recorded lecture' : 'Pasted text'} ·{' '}
+                    {formatDate(doc.createdAt)}
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">

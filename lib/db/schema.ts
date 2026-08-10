@@ -186,15 +186,16 @@ export const documents = pgTable('documents', {
   id: uuid('id').defaultRandom().primaryKey(),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   title: text('title').notNull(),
-  // 'pdf' | 'text' - plain text rather than pgEnum since MEM-005 (ingestion,
-  // not yet built) may grow this (Phase 2's audio/video/YouTube
-  // transcription per CLAUDE.md would add more source types).
+  // 'pdf' | 'text' | 'recording' - plain text rather than pgEnum, exactly
+  // so this could grow: issue #42 (lecture recording) added 'recording'
+  // with zero migration needed, as this comment anticipated back at MEM-005.
   sourceType: text('source_type').notNull(),
   // Populated when sourceType='pdf': the Supabase Storage object path for
-  // the uploaded file (not a public URL). Null for sourceType='text'.
+  // the uploaded file (not a public URL). Null for sourceType='text'/'recording'.
   storagePath: text('storage_path'),
-  // Populated at paste time for sourceType='text', and by MEM-005's
-  // extraction pipeline for sourceType='pdf' (null until that runs).
+  // Populated at paste time for sourceType='text', by MEM-005's extraction
+  // pipeline for sourceType='pdf' (null until that runs), and by issue #42
+  // with the client-assembled full transcript for sourceType='recording'.
   rawText: text('raw_text'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [

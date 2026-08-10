@@ -53,7 +53,7 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
         </Link>
         <h1 className="mt-2 text-2xl font-semibold">{document.title}</h1>
         <p className="text-muted-foreground">
-          {document.sourceType === 'pdf' ? 'PDF' : 'Pasted text'} ·{' '}
+          {document.sourceType === 'pdf' ? 'PDF' : document.sourceType === 'recording' ? 'Recorded lecture' : 'Pasted text'} ·{' '}
           {new Date(document.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
         </p>
       </div>

@@ -26,8 +26,8 @@ const FEATURES = [
 const STEPS = [
   {
     step: "1",
-    title: "Upload a PDF or paste your notes",
-    description: "Lecture slides, a textbook chapter, your own handwritten notes typed up. Drop in whatever you've got.",
+    title: "Upload, paste, or record",
+    description: "Lecture slides, a textbook chapter, your own typed notes, or a live recording of the lecture itself.",
   },
   {
     step: "2",
@@ -118,7 +118,7 @@ export default function Home() {
           ))}
         </div>
         <p className="mt-10 text-center text-sm text-zinc-500">
-          Live audio recording capture is on the roadmap. For now, upload a PDF or paste your text and you&apos;re set.
+          Upload a PDF, paste your notes, or record a lecture live right in your browser.
         </p>
       </section>
 
