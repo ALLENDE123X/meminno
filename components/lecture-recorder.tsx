@@ -95,6 +95,15 @@ export function LectureRecorder({ title, onSaved }: Props) {
   const [elapsedMs, setElapsedMs] = useState(0)
   const [segments, setSegments] = useState<Segment[]>([])
   const [transcriptPreview, setTranscriptPreview] = useState('')
+  // Post-review fix (PR #43): the full transcript is otherwise unrecoverable
+  // if the final save fails — a real, reachable case, since the per-user
+  // recording-chunk budget (40/day free) is generously higher than the
+  // per-user upload budget the save itself claims (5/day free), so a free
+  // user can legitimately finish transcribing a whole 90-minute lecture and
+  // then have the save itself 429. Kept in state (not just a local var) so
+  // the error view below can offer "Retry save" without re-recording, and
+  // so the transcript itself stays visible to copy manually if preferred.
+  const [pendingSaveText, setPendingSaveText] = useState<string | null>(null)
 
   const streamRef = useRef<MediaStream | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
@@ -194,6 +203,41 @@ export function LectureRecorder({ title, onSaved }: Props) {
     startCycleRef.current = startNewRecorderCycle
   }, [startNewRecorderCycle])
 
+  // Shared by handleStopAndSave (first attempt) and handleRetrySave (after a
+  // failed attempt) — extracted so a failed save can be retried with the
+  // exact same already-transcribed text instead of forcing a re-recording.
+  const saveTranscript = useCallback(
+    async (fullText: string) => {
+      try {
+        const formData = new FormData()
+        formData.set('recordingText', fullText)
+        if (title.trim()) formData.set('title', title.trim())
+        const res = await fetch('/api/documents', { method: 'POST', body: formData })
+        const body = await res.json()
+        if (!res.ok) {
+          setPhase('error')
+          setPendingSaveText(fullText)
+          setErrorMessage(body.error ?? 'Failed to save recording')
+          return
+        }
+        setPendingSaveText(null)
+        // Back to idle rather than staying on 'saving' forever: the parent
+        // (components/upload-form.tsx) renders its own success message and
+        // "View document" link below this component, so leaving the recorder
+        // showing a pulsing "Saving…" next to a success message reads as a
+        // hung save. Idle also makes recording a second lecture a single
+        // click, and handleStart() re-initialises every ref/state it needs.
+        setPhase('idle')
+        onSaved(body.document.id, body.document.title, body.document.rawText.length)
+      } catch {
+        setPhase('error')
+        setPendingSaveText(fullText)
+        setErrorMessage('Network error while saving the recording, please try again.')
+      }
+    },
+    [onSaved, title]
+  )
+
   const handleStopAndSave = useCallback(async () => {
     if (stoppingRef.current) return
     stoppingRef.current = true
@@ -228,30 +272,15 @@ export function LectureRecorder({ title, onSaved }: Props) {
       return
     }
 
-    try {
-      const formData = new FormData()
-      formData.set('recordingText', fullText)
-      if (title.trim()) formData.set('title', title.trim())
-      const res = await fetch('/api/documents', { method: 'POST', body: formData })
-      const body = await res.json()
-      if (!res.ok) {
-        setPhase('error')
-        setErrorMessage(body.error ?? 'Failed to save recording')
-        return
-      }
-      // Back to idle rather than staying on 'saving' forever: the parent
-      // (components/upload-form.tsx) renders its own success message and
-      // "View document" link below this component, so leaving the recorder
-      // showing a pulsing "Saving…" next to a success message reads as a
-      // hung save. Idle also makes recording a second lecture a single
-      // click, and handleStart() re-initialises every ref/state it needs.
-      setPhase('idle')
-      onSaved(body.document.id, body.document.title, body.document.rawText.length)
-    } catch {
-      setPhase('error')
-      setErrorMessage('Network error while saving the recording, please try again.')
-    }
-  }, [onSaved, title])
+    await saveTranscript(fullText)
+  }, [saveTranscript])
+
+  async function handleRetrySave() {
+    if (!pendingSaveText) return
+    setErrorMessage(null)
+    setPhase('saving')
+    await saveTranscript(pendingSaveText)
+  }
 
   async function handleStart() {
     setErrorMessage(null)
@@ -281,6 +310,7 @@ export function LectureRecorder({ title, onSaved }: Props) {
     uploadPromisesRef.current = []
     setSegments([])
     setTranscriptPreview('')
+    setPendingSaveText(null)
     setElapsedMs(0)
     startedAtRef.current = Date.now()
     setPhase('recording')
@@ -298,6 +328,23 @@ export function LectureRecorder({ title, onSaved }: Props) {
   if (phase === 'idle' || phase === 'error') {
     return (
       <div className="flex flex-col gap-3">
+        {phase === 'error' && pendingSaveText ? (
+          <div className="flex flex-col gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3">
+            <p className="text-sm text-destructive">{errorMessage}</p>
+            <p className="text-xs text-muted-foreground">
+              Your transcript wasn&apos;t lost — it&apos;s kept here until you retry the save or start a new recording.
+            </p>
+            <div className="max-h-40 overflow-y-auto rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
+              {pendingSaveText}
+            </div>
+            <Button type="button" variant="outline" size="sm" onClick={() => void handleRetrySave()}>
+              Retry save
+            </Button>
+          </div>
+        ) : errorMessage ? (
+          <p className="text-sm text-destructive">{errorMessage}</p>
+        ) : null}
+
         <p className="text-sm text-muted-foreground">
           Record a lecture live — Meminno transcribes it in the background as you go, in roughly 8-minute segments,
           up to 90 minutes total.
@@ -305,7 +352,6 @@ export function LectureRecorder({ title, onSaved }: Props) {
         <Button type="button" onClick={handleStart}>
           Start recording
         </Button>
-        {errorMessage ? <p className="text-sm text-destructive">{errorMessage}</p> : null}
       </div>
     )
   }
