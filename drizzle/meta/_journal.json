@@ -36,6 +36,13 @@
       "when": 1786500071623,
       "tag": "0004_mem-012-podcasts",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786500013259,
+      "tag": "0005_mem-018-affiliate-referral-tracking",
+      "breakpoints": true
     }
   ]
 }

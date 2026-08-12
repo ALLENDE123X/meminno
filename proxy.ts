@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
+import { REFERRAL_COOKIE_NAME, REFERRAL_COOKIE_OPTIONS, normalizeReferralCode } from '@/lib/referral'
 
 // Refreshes the Supabase Auth session cookie on every request.
 //
@@ -53,6 +54,24 @@ export async function proxy(request: NextRequest) {
   // their own getUser()/getSessionUser() for the actual auth decision -
   // this is purely a keep-alive.
   await supabase.auth.getUser()
+
+  // MEM-018 (issue #52): capture ?ref=<code> on the marketing landing page
+  // into a long-lived cookie so whatever creates the public.users row
+  // later (lib/session.ts's ensureUserRow) can read it. See lib/referral.ts
+  // for the full design and why this lives in the proxy rather than on
+  // app/page.tsx itself (a Server Component, which cannot set cookies).
+  // Scoped to "/" specifically - the actual first-touch surface a bio link
+  // lands on - rather than every route, so an unrelated `ref` query param
+  // elsewhere in the app can't accidentally re-attribute a signup.
+  // `response` is read here (not captured earlier) so this always writes
+  // onto whichever response object is current after Supabase's own
+  // setAll() above may have reassigned it.
+  if (request.nextUrl.pathname === '/') {
+    const refCode = normalizeReferralCode(request.nextUrl.searchParams.get('ref'))
+    if (refCode) {
+      response.cookies.set(REFERRAL_COOKIE_NAME, refCode, REFERRAL_COOKIE_OPTIONS)
+    }
+  }
 
   return response
 }
