@@ -349,6 +349,9 @@ export function LectureRecorder({ title, onSaved }: Props) {
           Record a lecture live — Meminno transcribes it in the background as you go, in roughly 8-minute segments,
           up to 90 minutes total.
         </p>
+        <p className="text-xs text-muted-foreground">
+          Audio is sent to OpenAI for transcription and isn&apos;t stored afterward — only the resulting text is saved.
+        </p>
         <Button type="button" onClick={handleStart}>
           Start recording
         </Button>
