@@ -3,6 +3,7 @@
 import * as React from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { setReferralCookie } from './actions'
 import { Button } from '@/components/ui/button'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 
@@ -19,6 +20,12 @@ type Status = 'idle' | 'loading' | 'sent' | 'error'
 // this app's).
 export default function SignInPage() {
   const [email, setEmail] = React.useState('')
+  // MEM-018 (issue #52): optional manual referral-code entry, alongside the
+  // `?ref=` URL path (proxy.ts) - see lib/referral.ts and
+  // app/sign-in/actions.ts for the full design. Not required, and left
+  // blank never clears an existing cookie a prior bio-link visit may have
+  // already set.
+  const [refCode, setRefCode] = React.useState('')
   const [status, setStatus] = React.useState<Status>('idle')
   const [message, setMessage] = React.useState<string | null>(null)
 
@@ -26,6 +33,18 @@ export default function SignInPage() {
     e.preventDefault()
     setStatus('loading')
     setMessage(null)
+
+    // Set before signInWithOtp() so the cookie is already present in this
+    // browser by the time the magic-link email gets clicked. Best-effort -
+    // a failure here shouldn't block sign-in itself, since attribution is
+    // strictly secondary to the user actually being able to sign in.
+    if (refCode.trim()) {
+      try {
+        await setReferralCookie(refCode)
+      } catch {
+        // Swallow - see comment above.
+      }
+    }
 
     const supabase = createClient()
     const { error } = await supabase.auth.signInWithOtp({
@@ -74,6 +93,15 @@ export default function SignInPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@college.edu"
                 aria-label="Email address"
+                disabled={status === 'loading'}
+                className="h-11 w-full rounded-md border border-border bg-muted px-4 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+              />
+              <input
+                type="text"
+                value={refCode}
+                onChange={(e) => setRefCode(e.target.value)}
+                placeholder="Referral code (optional)"
+                aria-label="Referral code (optional)"
                 disabled={status === 'loading'}
                 className="h-11 w-full rounded-md border border-border bg-muted px-4 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
               />

@@ -170,6 +170,20 @@ export const users = pgTable('users', {
   // Nullable - both unset until MEM-004 wires Stripe billing.
   stripeCustomerId: text('stripe_customer_id'),
   stripeSubscriptionId: text('stripe_subscription_id'),
+  // MEM-018 (issue #52): free-text affiliate/referral code, e.g. 'cynthia'.
+  // Set at most ONCE, on the row's true first INSERT, from whichever
+  // capture path (lib/referral.ts) supplied a code first - a `?ref=`
+  // landing-page visit (proxy.ts) or a manually-typed code on the sign-in
+  // page (app/sign-in/actions.ts). lib/session.ts's ensureUserRow() is what
+  // enforces "never overwritten after": the column is included in this
+  // INSERT's `values` but deliberately absent from the matching
+  // `onConflictDoUpdate`'s `set`, so a later session for the same user can
+  // never touch it, no matter what a stale/different meminno_ref cookie
+  // says at that point. No `promo_codes` table, no discount to the referred
+  // user, no admin UI - explicitly out of scope for v1 (1-2 affiliates,
+  // Pranav pays revenue share manually off a query against this column) -
+  // see issue #52.
+  referredByCode: text('referred_by_code'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   index('users_stripe_customer_id_idx').on(table.stripeCustomerId),
