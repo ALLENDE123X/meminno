@@ -14,9 +14,9 @@ export default function PrivacyPage() {
           <h2 className="text-2xl font-semibold">1. Where we are right now</h2>
           <p>
             Meminno&apos;s core product &mdash; account sign-in, uploading or pasting your coursework,
-            AI-generated notes, flashcards, and quizzes, and live lecture recording and transcription &mdash; is
-            live. This site also still has a waitlist form for anyone who hasn&apos;t created an account yet. This
-            policy covers what we collect from both: the waitlist form, and actual use of the product.
+            AI-generated notes, flashcards, and quizzes, live lecture recording and transcription, and a paid
+            subscription plan &mdash; is live. This policy covers what we collect from using it, as well as
+            anything still on file from our earlier waitlist signups.
           </p>
         </section>
 
@@ -24,8 +24,8 @@ export default function PrivacyPage() {
           <h2 className="text-2xl font-semibold">2. Information we collect</h2>
           <ul className="list-disc space-y-2 pl-6">
             <li>
-              <strong>Email address.</strong> If you submit the waitlist form, or once you have an account, we
-              store the email address tied to it.
+              <strong>Email address.</strong> The email address tied to your account, or one you gave us if you
+              joined our waitlist.
             </li>
             <li>
               <strong>Basic site analytics.</strong> Aggregate page-visit data (page views, referring site, coarse
@@ -33,13 +33,19 @@ export default function PrivacyPage() {
               individually-identifying profile.
             </li>
             <li>
-              <strong>Coursework you upload or paste.</strong> The PDFs or pasted text you provide, used to
+              <strong>Coursework you upload or paste.</strong> The text of the PDFs you upload or the text you
+              paste directly &mdash; we extract and store that text, not the original PDF file &mdash; used to
               generate your notes, flashcards, and quizzes.
             </li>
             <li>
               <strong>Microphone audio.</strong> If you use live lecture recording, the audio captured from your
               microphone, used to transcribe your lecture into text. See &ldquo;How AI processes your
               content&rdquo; below for exactly where this data goes.
+            </li>
+            <li>
+              <strong>Subscription and billing status.</strong> Whether you have an active paid subscription and
+              which plan. Your payment card details are entered directly with Stripe and are never seen by
+              Meminno &mdash; see the third-party services section below.
             </li>
           </ul>
           <p>We do not sell, rent, or share your personal information with any third party for marketing purposes.</p>
@@ -53,19 +59,23 @@ export default function PrivacyPage() {
           <ul className="list-disc space-y-2 pl-6">
             <li>
               <strong>OpenAI.</strong> When you generate notes, flashcards, or a quiz from a document, the text of
-              that document is sent to OpenAI to produce them. When you use live lecture recording, the raw audio
-              captured from your microphone is sent to OpenAI to transcribe it into text &mdash; that raw audio is
-              not stored by us afterward, only the resulting transcript is saved as your document.
+              that document is sent to OpenAI to produce them. If you use the optional AI podcast feature, the
+              text of that document is also sent to OpenAI to write the podcast script. When you use live lecture
+              recording, the raw audio captured from your microphone is sent to OpenAI to transcribe it into text
+              &mdash; that raw audio is not stored by us afterward, only the resulting transcript is saved as your
+              document.
             </li>
             <li>
-              <strong>Google (Gemini).</strong> We use Google&apos;s Gemini AI to generate optional AI podcast
-              summaries from your uploaded materials, for users who use that feature.
+              <strong>Google (Gemini).</strong> If you use the optional AI podcast feature, the podcast script
+              &mdash; which OpenAI generates from your document, as described above &mdash; is sent to
+              Google&apos;s Gemini to be turned into audio. Gemini does not receive your original document.
             </li>
           </ul>
           <p>
             Each provider processes this content under its own privacy policy and terms of service. We only send
             your content to these providers to perform the specific task described above &mdash; generating your
-            notes, flashcards, quiz, transcript, or podcast &mdash; not for any other purpose of our own.
+            notes, flashcards, quiz, transcript, or podcast script/audio &mdash; not for any other purpose of our
+            own.
           </p>
         </section>
 
@@ -80,15 +90,20 @@ export default function PrivacyPage() {
             </li>
             <li>
               <strong>Supabase.</strong> Stores your account and product data (documents, notes, flashcards,
-              quizzes) securely.
+              quizzes).
             </li>
             <li>
-              <strong>OpenAI.</strong> Processes coursework text (to generate notes, flashcards, and quizzes) and
-              microphone audio (to transcribe live lecture recordings). See &ldquo;How AI processes your
-              content&rdquo; above for detail.
+              <strong>OpenAI.</strong> Processes coursework text (to generate notes, flashcards, quizzes, and
+              podcast scripts) and microphone audio (to transcribe live lecture recordings). See &ldquo;How AI
+              processes your content&rdquo; above for detail.
             </li>
             <li>
-              <strong>Google (Gemini).</strong> Processes document text to generate optional AI podcast summaries.
+              <strong>Google (Gemini).</strong> For the optional AI podcast feature, turns the
+              OpenAI-generated podcast script into audio. See &ldquo;How AI processes your content&rdquo; above
+              for detail.
+            </li>
+            <li>
+              <strong>Stripe.</strong> Processes subscription payments.
             </li>
           </ul>
           <p>Each of these services has its own privacy policy governing how it handles your data.</p>

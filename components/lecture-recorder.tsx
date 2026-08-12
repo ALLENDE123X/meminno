@@ -350,7 +350,7 @@ export function LectureRecorder({ title, onSaved }: Props) {
           up to 90 minutes total.
         </p>
         <p className="text-xs text-muted-foreground">
-          Audio is sent to OpenAI for transcription and isn&apos;t stored afterward — only the resulting text is saved.
+          Audio is sent to OpenAI for transcription and isn&apos;t stored by us afterward — only the resulting text is saved.
         </p>
         <Button type="button" onClick={handleStart}>
           Start recording
