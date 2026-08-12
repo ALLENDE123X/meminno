@@ -105,6 +105,11 @@
 //     it. See drizzle/0003_mem-002-rls-parent-ownership.sql for the
 //     migration and CLAUDE.md's HARD STOP 7 for why this was scoped as a
 //     tightening-only change (no role/BYPASSRLS/FORCE touched).
+//     MEM-012's `podcasts` table is the first table added AFTER that fix, so
+//     it ships with the parent-ownership `withCheck` from day one
+//     (`podcasts` -> `documents`, via document_id) rather than needing a
+//     follow-up tightening migration - this is now the default shape for
+//     any new child table, per CLAUDE.md's 5-piece convention.
 //   - `authenticated`/`anon` are Supabase-managed roles this migration never
 //     creates, and `meminno_app`/`meminno_rls` are bootstrapped once via
 //     Supabase's privileged channel (a role cannot create roles) — all four
@@ -319,5 +324,63 @@ export const quizAttempts = pgTable('quiz_attempts', {
     // Tightened (issue #23) - see notes_own_rows above for the full
     // reasoning. Parent here is quizzes, via quiz_id.
     withCheck: sql`(select public.meminno_current_user_id()) = user_id AND EXISTS (SELECT 1 FROM public.quizzes q WHERE q.id = quiz_id AND q.user_id = (select public.meminno_current_user_id()))`,
+  }),
+]).enableRLS()
+
+// MEM-012 (issue #47): the AI-podcast feature's persistence layer - one row
+// per generated Audio Overview of a document. Schema + RLS only; nothing
+// generates, stores, or serves audio yet (that is a separate ticket).
+//
+// Parent is `documents`, NOT `notes`, matching the locked source-material
+// decision on issue #47: a podcast is generated from `documents.rawText`, so
+// the row that must be ownership-checked is the document. Structurally this
+// is the same shape as `notes` (child of `documents`, denormalized user_id),
+// so its RLS policy is `notes_own_rows` with the table names swapped.
+export const podcasts = pgTable('podcasts', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  documentId: uuid('document_id').notNull().references(() => documents.id, { onDelete: 'cascade' }),
+  // Denormalized from documents.userId, same reason as notes/flashcards/
+  // quizzes/quiz_attempts (see file header): keeps `using` a flat check.
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  // 'pending' | 'generating' | 'ready' | 'failed'. Plain text rather than
+  // pgEnum, matching this schema's existing convention for value domains
+  // that might still grow (documents.sourceType, users.plan) - and
+  // specifically so a future state like 'cancelled' needs no migration, the
+  // way documents.sourceType absorbed 'recording' with none. Not enforced
+  // via CHECK constraint, matching quiz_attempts.score's app-level-rather-
+  // than-DB-level validation convention.
+  status: text('status').notNull().default('pending'),
+  // Supabase Storage object path for the generated audio file (not a public
+  // URL - same convention as documents.storagePath). Null until status
+  // reaches 'ready'.
+  storagePath: text('storage_path'),
+  // Audio length in whole seconds. Null until 'ready'; nothing derives it
+  // before the file exists.
+  durationSeconds: integer('duration_seconds'),
+  // Populated on status='failed' so a future UI can say WHY rather than a
+  // bare "something went wrong". No other table in this schema carries a
+  // failure state to mirror (podcasts is the first async-generation table -
+  // notes/flashcards/quizzes are all written synchronously or not at all),
+  // so this is deliberately the minimal shape: one nullable text column, no
+  // error-code enum, no retry counter, no separate errors table. Intended
+  // to hold a short internal reason (the same typed-result `reason` strings
+  // lib/*Generation.ts already produce, e.g. 'not_configured'), not raw
+  // third-party provider output echoed straight back to a user.
+  errorMessage: text('error_message'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index('podcasts_document_id_idx').on(table.documentId),
+  index('podcasts_user_id_idx').on(table.userId),
+  pgPolicy('podcasts_own_rows', {
+    for: 'all',
+    to: ['authenticated', 'meminno_rls'],
+    using: sql`(select public.meminno_current_user_id()) = user_id`,
+    // Parent-ownership check from day one (see the file header's issue #23
+    // section for why a flat user_id-only withCheck is not enough): without
+    // the EXISTS clause, user B could INSERT a podcast row with user_id = B
+    // pointing document_id at user A's document, since Postgres evaluates FK
+    // referential integrity with RLS bypassed by design. Parent here is
+    // documents, via document_id - identical in shape to notes_own_rows.
+    withCheck: sql`(select public.meminno_current_user_id()) = user_id AND EXISTS (SELECT 1 FROM public.documents d WHERE d.id = document_id AND d.user_id = (select public.meminno_current_user_id()))`,
   }),
 ]).enableRLS()

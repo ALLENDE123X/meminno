@@ -1,6 +1,6 @@
 {
-  "id": "28c077e1-9d66-4775-bba0-0d737e519062",
-  "prevId": "3fb5dfa5-9883-4ee3-9b71-796e09cdb27f",
+  "id": "2942570e-824e-49b0-960f-b0014aa716de",
+  "prevId": "28c077e1-9d66-4775-bba0-0d737e519062",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -774,6 +774,12 @@
         },
         "stripe_subscription_id": {
           "name": "stripe_subscription_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "referred_by_code": {
+          "name": "referred_by_code",
           "type": "text",
           "primaryKey": false,
           "notNull": false
