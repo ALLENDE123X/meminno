@@ -21,14 +21,10 @@ import { logger } from '@/lib/logger'
 //     is exactly the shape (an array of objects with multiple required
 //     fields) that was found in production to fail non-strict forced
 //     tool-use for the quiz module, and there's no reason to expect a
-//     two-speaker turns array to be any more reliable non-strict. Unlike
-//     MEM-007-fix, this module deliberately does NOT also add a same-ticket
-//     retry loop on top of strict mode - that was added to quiz generation
-//     only after real evidence of a residual failure rate even with strict
-//     mode enabled. With zero production traffic yet for this brand-new
-//     module, adding a retry preemptively would be guessing at a failure
-//     mode rather than fixing an observed one; revisit if real evidence of a
-//     similar residual failure rate turns up here too.
+//     two-speaker turns array to be any more reliable non-strict. The
+//     residual failure rate that strict mode CANNOT catch (a perfectly
+//     shaped response that is simply too long) is what issue #65 later
+//     added the bounded retry below for - see MAX_ATTEMPTS.
 //   - The tool-call output is untrusted model output derived from
 //     user-uploaded content, and is re-validated with zod before it is ever
 //     persisted or returned - never trusted just because the API call
@@ -42,7 +38,15 @@ import { logger } from '@/lib/logger'
 // it belongs in the calling route (MEM-015's lib/podcastLimits.ts, not built
 // yet), mirroring the generation-logic-vs-quota-enforcement split every
 // other lib/*Generation.ts module in this repo follows.
-const SYSTEM_PROMPT = `You are an expert podcast script writer creating a natural, engaging two-person "Audio Overview" style podcast conversation from a student's study material, in the style popularized by NotebookLM. Given raw source material (a document's extracted or pasted text), produce a complete podcast script by calling the generate_podcast_script tool.
+//
+// A function rather than a plain const (issue #65) purely so it can
+// interpolate MAX_TOTAL_WORDS, which is declared further down: the prompt now
+// states the HARD ceiling as well as the soft target, and a prompt that
+// hardcodes "800" while the constant says something else is exactly the drift
+// that caused issue #63. Evaluated per call, so there is no
+// temporal-dead-zone problem referencing a later const.
+function buildSystemPrompt(): string {
+  return `You are an expert podcast script writer creating a natural, engaging two-person "Audio Overview" style podcast conversation from a student's study material, in the style popularized by NotebookLM. Given raw source material (a document's extracted or pasted text), produce a complete podcast script by calling the generate_podcast_script tool.
 
 Speakers:
 - Exactly two speakers, labeled "A" and "B" - no other labels.
@@ -61,7 +65,10 @@ Content:
 - Cover the real substance of the material - the concepts, facts, and structure actually present in the source - not a vague gloss over it.
 - Base everything strictly on the provided material. Do not add outside facts, and do not invent details the material does not support.
 - Open with a brief, natural cold-open that sets up what this material covers - no "Welcome to the show" radio-announcer framing. Close with a short, natural wrap-up, not an abrupt stop.
-- Target a natural 3.5-5 minute spoken conversation at a conversational pace (about 150 words per minute), which works out to roughly 500-700 total words across all turns combined (issue #63: lowered from an original 750-1050 target after real production TTS output showed that word count runs close enough to podcastAudio.ts's hard 7,000-character synthesis ceiling to leave no real safety margin). Do not pad to hit a word count - a slightly shorter, tighter conversation that genuinely covers the material well is better than a bloated one that doesn't.`
+- Target a natural 3.5-5 minute spoken conversation at a conversational pace (about 150 words per minute), which works out to roughly 500-700 total words across all turns combined (issue #63: lowered from an original 750-1050 target after real production TTS output showed that word count runs close enough to podcastAudio.ts's hard 7,000-character synthesis ceiling to leave no real safety margin). Do not pad to hit a word count - a slightly shorter, tighter conversation that genuinely covers the material well is better than a bloated one that doesn't.
+- HARD LIMIT: the finished script must never exceed ${MAX_TOTAL_WORDS} total words across all turns combined. A script over that length is rejected outright and cannot be turned into audio at all, so going over is worse than leaving material out.
+- Long, dense, multi-topic source material (a full textbook chapter, a whole course reader, a 50+ page PDF) will NOT fit in ${MAX_TOTAL_WORDS} words, and trying to touch every topic in it produces a rushed script that is both over the limit and useless to study from. Choose the handful of ideas that matter most, cover those properly, and deliberately leave the rest out. Dropping whole topics is the correct way to stay within the limit; compressing every turn into dense narration is not.`
+}
 
 const GENERATE_PODCAST_SCRIPT_TOOL_NAME = 'generate_podcast_script'
 
@@ -217,6 +224,21 @@ export type GeneratePodcastScriptResult =
       message: string
     }
 
+/**
+ * One attempt's result (issue #65). Same shape as the public
+ * GeneratePodcastScriptResult plus `correction` - the corrective feedback a
+ * failed attempt hands to the retry that follows it (see
+ * buildRetryCorrection). Internal: never returned to a caller.
+ */
+type PodcastScriptAttempt =
+  | { success: true; data: GeneratedPodcastScript }
+  | {
+      success: false
+      reason: 'not_configured' | 'empty_input' | 'invalid_response' | 'api_error'
+      message: string
+      correction?: string
+    }
+
 const FALLBACK_MESSAGE = 'Please try again in a moment.'
 
 // documents.raw_text can be up to MEM-004's own 200k-character cap
@@ -259,8 +281,47 @@ const MODEL = 'gpt-5.6-luna'
 // mind, the same way app/api/documents/[id]/notes/route.ts's 60s and
 // app/api/notes/[id]/quiz/route.ts's 120s were each sized against their own
 // generation module's worst case.
+//
+// Issue #65 added a second attempt on top of this WITHOUT changing that 40s
+// figure - see SCRIPT_GEN_BUDGET_MS below, which is the whole point of how
+// that retry is built. Real measured latency for ONE attempt on a genuinely
+// dense ~29,000-character source document is 12-16s (seven live runs during
+// issue #65), so 20s is a real but not generous per-attempt allowance - do
+// not shorten it to buy budget for the retry.
 const OPENAI_TIMEOUT_MS = 20_000
 const OPENAI_MAX_RETRIES = 1
+
+// ISSUE #65 TIMING BUDGET - READ BEFORE CHANGING ANY NUMBER ABOVE OR BELOW.
+//
+// This module's total wall-clock ceiling, retry included. Deliberately EXACTLY
+// the pre-issue-#65 worst case (2 x 20s = 40s), because this module is the
+// first of two sequential vendor calls inside
+// app/api/documents/[id]/podcast/route.ts's single hard `maxDuration = 300`
+// Vercel ceiling, whose pathological case already had only ~5s of slack:
+//
+//   script gen                                                        40s
+//   TTS       lib/podcastAudio.ts GEMINI_TIMEOUT_MS, pathological     240s
+//   upload    ~20MB WAV into Supabase Storage                          10s
+//   overhead  session, burst, doc lookup, insert, 2 updates, signing    5s
+//                                                            total    295s  (5s margin)
+//
+// A naive copy of lib/quizGeneration.ts's retry - a second attempt paying its
+// own (OPENAI_MAX_RETRIES + 1) x OPENAI_TIMEOUT_MS - makes script gen 2 x 40s
+// = 80s and that case 80 + 240 + 10 + 5 = 335s: 35s OVER a hard platform
+// ceiling. Going over does not degrade gracefully - the function is killed
+// mid-flight, so nothing marks the `podcasts` row failed and it strands at
+// 'generating', the exact bug issue #50's review fixed with that route's
+// STALE_GENERATING_MS recovery.
+//
+// So the retry is DEADLINE-AWARE: it runs only when attempt 1 finished with a
+// full OPENAI_TIMEOUT_MS still left inside this 40s, and gets no SDK-level
+// retries of its own (maxRetries: 0) - it corrects a VALIDATION failure, not a
+// transient network fault, which attempt 1's own retry budget already covers.
+// Worst case is therefore max(40s, <=20s elapsed + 20s) = 40s, so the route's
+// maxDuration arithmetic above stays true and needed no revision. Measured
+// reality: one attempt is 12-16s, so the retry normally gets its full 20s and
+// the module returns in ~25s.
+const SCRIPT_GEN_BUDGET_MS = (OPENAI_MAX_RETRIES + 1) * OPENAI_TIMEOUT_MS
 
 // Real finding from a live smoke-test call against the actual OpenAI API
 // during MEM-013 (not documented anywhere else, since this is the first
@@ -281,43 +342,82 @@ const OPENAI_MAX_RETRIES = 1
 const REASONING_EFFORT = 'none'
 
 /**
- * Generates a natural, two-speaker podcast script from `sourceText` (a
- * document's raw/extracted text) via OpenAI forced tool-use with structured
- * outputs (`strict: true`), zod-validates the result, and never throws -
- * every failure mode (including OPENAI_API_KEY being unset) returns a typed,
- * caller-safe result instead of an unhandled exception or a silent
- * empty-script return.
+ * Best-effort total word count of a tool-call response that PARSED as JSON but
+ * failed zod validation. Deliberately tolerant of any shape - it is reading
+ * output already known to be invalid - and returns null when there is nothing
+ * countable, so callers can tell "1,043 words" apart from "no idea".
  */
-export async function generatePodcastScriptFromText(sourceText: string): Promise<GeneratePodcastScriptResult> {
-  const trimmed = sourceText.trim()
-  if (!trimmed) {
-    return {
-      success: false,
-      reason: 'empty_input',
-      message: 'This document has no text to generate a podcast script from.',
-    }
+function totalWordsOfRawOutput(rawOutput: unknown): number | null {
+  if (typeof rawOutput !== 'object' || rawOutput === null) return null
+  const turns = (rawOutput as { turns?: unknown }).turns
+  if (!Array.isArray(turns)) return null
+
+  let total = 0
+  for (const turn of turns) {
+    if (typeof turn !== 'object' || turn === null) continue
+    const text = (turn as { text?: unknown }).text
+    if (typeof text === 'string') total += countWords(text)
+  }
+  return total
+}
+
+// The retry's corrective feedback (issue #65) - the part that makes the retry
+// worth having, and deliberately NOT lib/quizGeneration.ts's pattern. That
+// module re-rolls an identical request, correct for its failure mode (a
+// malformed-JSON sample a re-roll fixes). This module's is different in kind:
+// the model overshoots the word ceiling on dense, broad material, a systematic
+// tendency of the prompt-plus-document pair rather than an unlucky sample.
+// Three identical live calls during issue #65 produced three overshooting
+// scripts and zero valid ones, so a blind re-roll was 0-for-3 here - not
+// merely less elegant. Telling the model what it did wrong, with the measured
+// number, is what makes the retry a fix.
+//
+// Only produced when there is something real to report (a parsed response we
+// could count). A response that never parsed gets a plain re-roll rather than
+// invented feedback.
+function buildRetryCorrection(rawOutput: unknown): string | undefined {
+  const totalWords = totalWordsOfRawOutput(rawOutput)
+  if (totalWords === null) return undefined
+
+  if (totalWords > MAX_TOTAL_WORDS) {
+    return `Your previous attempt was REJECTED. It came back at ${totalWords} total words, over the hard ${MAX_TOTAL_WORDS}-word limit, so it could not be used at all. Write a genuinely shorter script this time: aim for about ${SHORTER_RETRY_TARGET_WORDS} total words, and never exceed ${MAX_TOTAL_WORDS}. The source material is broader than this length can cover - so cover FEWER topics, not the same topics faster. Pick the few ideas that matter most, explore those properly, and drop the rest of the material entirely.`
   }
 
-  const apiKey = process.env.OPENAI_API_KEY
-  if (!apiKey) {
-    logger.warn('AI podcast script generation requested but OPENAI_API_KEY is not configured')
-    return {
-      success: false,
-      reason: 'not_configured',
-      message: `AI podcast generation isn't available right now. ${FALLBACK_MESSAGE}`,
-    }
+  if (totalWords < MIN_TOTAL_WORDS) {
+    return `Your previous attempt was REJECTED. It came back at only ${totalWords} total words, under the ${MIN_TOTAL_WORDS}-word minimum, so it could not be used at all. Write a fuller script this time: aim for about ${SHORTER_RETRY_TARGET_WORDS} total words by exploring the key ideas in more depth and letting the two speakers genuinely work through them, rather than by padding with filler.`
   }
 
-  const promptText = trimmed.length > MAX_INPUT_CHARS ? trimmed.slice(0, MAX_INPUT_CHARS) : trimmed
+  return `Your previous attempt was REJECTED as structurally invalid. The script must have at least ${MIN_TURNS} turns, must include turns from BOTH speakers "A" and "B" (never one speaker alone), and must total between ${MIN_TOTAL_WORDS} and ${MAX_TOTAL_WORDS} words. Follow all of those exactly this time.`
+}
+
+/**
+ * One OpenAI call + parse + validate attempt, factored out of
+ * generatePodcastScriptFromText so it can be tried up to MAX_ATTEMPTS times
+ * without duplicating the request/parse/validate logic - the same split
+ * lib/quizGeneration.ts's attemptGenerateQuiz uses. Never throws: api_error is
+ * caught and returned as a typed result, exactly as before this was split out.
+ *
+ * `correction` is the retry's corrective feedback (see buildRetryCorrection).
+ * It is appended as a trailing system message rather than being folded into
+ * the user message on purpose: the user message is untrusted, user-uploaded
+ * document text, and blending our own instructions into it would blur exactly
+ * the boundary that keeps document content from reading as instructions.
+ */
+async function attemptGeneratePodcastScript(
+  client: OpenAI,
+  promptText: string,
+  correction?: string
+): Promise<PodcastScriptAttempt> {
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: 'system', content: buildSystemPrompt() },
+    { role: 'user', content: promptText },
+  ]
+  if (correction) messages.push({ role: 'system', content: correction })
 
   try {
-    const client = new OpenAI({ apiKey, timeout: OPENAI_TIMEOUT_MS, maxRetries: OPENAI_MAX_RETRIES })
     const completion = await client.chat.completions.create({
       model: MODEL,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: promptText },
-      ],
+      messages,
       tools: [GENERATE_PODCAST_SCRIPT_TOOL],
       tool_choice: { type: 'function', function: { name: GENERATE_PODCAST_SCRIPT_TOOL_NAME } },
       reasoning_effort: REASONING_EFFORT,
@@ -357,13 +457,17 @@ export async function generatePodcastScriptFromText(sourceText: string): Promise
     const parsed = generatedPodcastScriptSchema.safeParse(rawOutput)
     if (!parsed.success) {
       logger.warn(
-        { issues: parsed.error.issues.map((issue) => ({ path: issue.path, message: issue.message })) },
+        {
+          issues: parsed.error.issues.map((issue) => ({ path: issue.path, message: issue.message })),
+          totalWords: totalWordsOfRawOutput(rawOutput),
+        },
         'AI podcast script generation: validation failed'
       )
       return {
         success: false,
         reason: 'invalid_response',
         message: `Couldn't generate a valid podcast script from this document. ${FALLBACK_MESSAGE}`,
+        correction: buildRetryCorrection(rawOutput),
       }
     }
 
@@ -376,4 +480,105 @@ export async function generatePodcastScriptFromText(sourceText: string): Promise
       message: `Something went wrong generating this podcast script. ${FALLBACK_MESSAGE}`,
     }
   }
+}
+
+// Two attempts total, not a loop - same bound, and the same reasoning, as
+// lib/quizGeneration.ts's MAX_ATTEMPTS: keep worst-case latency and cost on
+// this endpoint predictable, and never loop unboundedly against a billed
+// vendor. Only `invalid_response` is retried. Not `api_error` (a real
+// network/API-level failure; the SDK-level retry budget on the first attempt
+// already covers the transient case) and not `not_configured`/`empty_input`
+// (retrying a request that can never succeed wastes a billed call for
+// nothing).
+//
+// Rate-limit/budget interaction (CLAUDE.md HARD STOP 6): identical to quiz
+// generation's. This retry is internal to this function and invisible to the
+// caller - app/api/documents/[id]/podcast/route.ts claims its budget unit
+// exactly once per POST, BEFORE calling this, so a retry here can never
+// double-claim a day's quota. It does mean one POST can cost up to two real
+// OpenAI script calls (~$0.002 each at gpt-5.6-luna's rates, against a
+// podcast's ~$0.10 all-in cost, which is dominated by the TTS call) - an
+// accepted, explicitly bounded tradeoff.
+const MAX_ATTEMPTS = 2
+
+// What the corrective retry asks for instead of the system prompt's 500-700:
+// the midpoint of the valid range, deliberately well clear of BOTH bounds.
+// The retry only ever runs after the model already missed a bound, so aiming
+// it back at the edge it just overshot would be asking for the same failure.
+const SHORTER_RETRY_TARGET_WORDS = Math.round((MIN_TOTAL_WORDS + MAX_TOTAL_WORDS) / 2)
+
+/**
+ * Generates a natural, two-speaker podcast script from `sourceText` (a
+ * document's raw/extracted text) via OpenAI forced tool-use with structured
+ * outputs (`strict: true`), zod-validates the result, and never throws -
+ * every failure mode (including OPENAI_API_KEY being unset) returns a typed,
+ * caller-safe result instead of an unhandled exception or a silent
+ * empty-script return.
+ *
+ * Retries ONCE on `invalid_response`, with corrective feedback and inside a
+ * fixed 40s total budget - see SCRIPT_GEN_BUDGET_MS for the full timing
+ * arithmetic against the calling route's hard 300s ceiling, and
+ * buildRetryCorrection for why the retry is corrective rather than a re-roll.
+ */
+export async function generatePodcastScriptFromText(sourceText: string): Promise<GeneratePodcastScriptResult> {
+  const trimmed = sourceText.trim()
+  if (!trimmed) {
+    return {
+      success: false,
+      reason: 'empty_input',
+      message: 'This document has no text to generate a podcast script from.',
+    }
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY
+  if (!apiKey) {
+    logger.warn('AI podcast script generation requested but OPENAI_API_KEY is not configured')
+    return {
+      success: false,
+      reason: 'not_configured',
+      message: `AI podcast generation isn't available right now. ${FALLBACK_MESSAGE}`,
+    }
+  }
+
+  const promptText = trimmed.length > MAX_INPUT_CHARS ? trimmed.slice(0, MAX_INPUT_CHARS) : trimmed
+  const startedAt = Date.now()
+
+  const client = new OpenAI({ apiKey, timeout: OPENAI_TIMEOUT_MS, maxRetries: OPENAI_MAX_RETRIES })
+  let result = await attemptGeneratePodcastScript(client, promptText)
+
+  for (let attempt = 2; attempt <= MAX_ATTEMPTS && !result.success && result.reason === 'invalid_response'; attempt++) {
+    // The deadline check that keeps this whole module inside the 40s the
+    // calling route's maxDuration budget allots it. A retry only happens with
+    // a FULL further attempt's worth of budget left; with less, giving up now
+    // and returning the typed failure is strictly better than starting a call
+    // that would be cut off mid-flight after burning the remaining seconds
+    // (and being billed for it) - and the caller sees exactly the same
+    // outcome it would have seen before this fix existed.
+    const remainingMs = SCRIPT_GEN_BUDGET_MS - (Date.now() - startedAt)
+    if (remainingMs < OPENAI_TIMEOUT_MS) {
+      logger.warn(
+        { attempt, remainingMs },
+        'AI podcast script generation: skipping retry, not enough time budget left'
+      )
+      break
+    }
+
+    logger.warn(
+      { attempt, remainingMs, corrected: Boolean(result.correction) },
+      'AI podcast script generation: retrying once after invalid_response'
+    )
+    // No SDK-level retries on the retry (maxRetries: 0): it exists to correct
+    // a validation failure, not a transient network fault, so stacking another
+    // (OPENAI_MAX_RETRIES + 1) x OPENAI_TIMEOUT_MS budget on top would double
+    // this module's worst case for no reliability gain. See
+    // SCRIPT_GEN_BUDGET_MS.
+    const retryClient = new OpenAI({ apiKey, timeout: OPENAI_TIMEOUT_MS, maxRetries: 0 })
+    result = await attemptGeneratePodcastScript(retryClient, promptText, result.correction)
+  }
+
+  // `correction` is internal plumbing between the two attempts and is not part
+  // of this module's public result contract - narrowed away explicitly rather
+  // than leaked to callers by structural typing.
+  if (result.success) return result
+  return { success: false, reason: result.reason, message: result.message }
 }
