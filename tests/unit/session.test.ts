@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { getSessionUser, sessionErrorResponse } from '@/lib/session'
 import { createClient as createServerSupabaseClient } from '@/lib/supabase/server'
 import { withUserContext } from '@/lib/db'
+import { cookies } from 'next/headers'
+import { REFERRAL_COOKIE_NAME } from '@/lib/referral'
 
 // getSessionUser() talks to Supabase Auth (network) and the DB
 // (withUserContext, itself a real Postgres transaction) - neither belongs
@@ -14,9 +16,16 @@ vi.mock('@/lib/supabase/server', () => ({
 vi.mock('@/lib/db', () => ({
   withUserContext: vi.fn(),
 }))
+// MEM-018: ensureUserRow() reads the meminno_ref cookie via next/headers -
+// same mocking approach tests/unit/billing-actions.test.ts already uses for
+// that module's own next/headers (`headers`) call.
+vi.mock('next/headers', () => ({
+  cookies: vi.fn(),
+}))
 
 const mockCreateServerClient = vi.mocked(createServerSupabaseClient)
 const mockWithUserContext = vi.mocked(withUserContext)
+const mockCookies = vi.mocked(cookies)
 
 /** Builds a chainable mock tx: tx.insert(...).values(...).onConflictDoUpdate(...).returning() -> rows */
 function mockTx(rows: Array<{ plan: string }>) {
@@ -32,9 +41,20 @@ function mockAuth(getUser: ReturnType<typeof vi.fn>) {
   mockCreateServerClient.mockResolvedValue({ auth: { getUser } } as any)
 }
 
+/** Mocks next/headers' cookies() to (optionally) carry a meminno_ref value. */
+function mockReferralCookie(value: string | undefined) {
+  mockCookies.mockResolvedValue({
+    get: (name: string) => (name === REFERRAL_COOKIE_NAME && value !== undefined ? { name, value } : undefined),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any)
+}
+
 describe('getSessionUser', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // Default: no referral cookie present. Individual MEM-018 tests below
+    // override this via mockReferralCookie(...).
+    mockReferralCookie(undefined)
   })
 
   it('returns 401 when Supabase Auth returns an error', async () => {
@@ -118,6 +138,75 @@ describe('getSessionUser', () => {
     const result = await getSessionUser(new Request('http://localhost/api/documents', { method: 'POST' }))
 
     expect(result).toEqual({ ok: true, userId: 'u-3', plan: 'free' })
+  })
+
+  // MEM-018 (issue #52): referredByCode must be set on a TRUE first insert
+  // when a meminno_ref cookie is present, and must NEVER be touched again
+  // on any later call for that same user — see lib/session.ts's
+  // ensureUserRow() doc comment for how the insert/onConflictDoUpdate split
+  // is what enforces that at the SQL level.
+  describe('MEM-018: referredByCode (referral attribution)', () => {
+    it('includes referredByCode in the INSERT values when a meminno_ref cookie is present on first signup', async () => {
+      mockReferralCookie('cynthia')
+      const getUser = vi.fn().mockResolvedValue({ data: { user: { id: 'u-new', email: 'new@example.com' } }, error: null })
+      mockAuth(getUser)
+      const tx = mockTx([{ plan: 'free' }])
+      mockWithUserContext.mockImplementation(async (_userId, fn) => fn(tx as never))
+
+      await getSessionUser()
+
+      expect(tx.values).toHaveBeenCalledWith({ id: 'u-new', email: 'new@example.com', referredByCode: 'cynthia' })
+    })
+
+    it('trims whitespace and omits referredByCode entirely when the cookie is blank/whitespace-only', async () => {
+      mockReferralCookie('   ')
+      const getUser = vi.fn().mockResolvedValue({ data: { user: { id: 'u-blank', email: 'blank@example.com' } }, error: null })
+      mockAuth(getUser)
+      const tx = mockTx([{ plan: 'free' }])
+      mockWithUserContext.mockImplementation(async (_userId, fn) => fn(tx as never))
+
+      await getSessionUser()
+
+      expect(tx.values).toHaveBeenCalledWith({ id: 'u-blank', email: 'blank@example.com' })
+    })
+
+    it('omits referredByCode from the INSERT values when no meminno_ref cookie is present', async () => {
+      mockReferralCookie(undefined)
+      const getUser = vi.fn().mockResolvedValue({ data: { user: { id: 'u-none', email: 'none@example.com' } }, error: null })
+      mockAuth(getUser)
+      const tx = mockTx([{ plan: 'free' }])
+      mockWithUserContext.mockImplementation(async (_userId, fn) => fn(tx as never))
+
+      await getSessionUser()
+
+      expect(tx.values).toHaveBeenCalledWith({ id: 'u-none', email: 'none@example.com' })
+    })
+
+    it('NEVER includes referredByCode in the onConflictDoUpdate set clause, even when a referral cookie is present — an existing user survives repeated getSessionUser() calls with a stale/different cookie unchanged', async () => {
+      // Simulates: user 'u-existing' originally signed up with no referral
+      // (or a different one already locked in), but a *different* creator's
+      // link/code cookie is somehow still present on a later visit (e.g. a
+      // shared browser, or the cookie simply never got cleared). That must
+      // never be allowed to retroactively change referredByCode.
+      mockReferralCookie('a-different-creator')
+      const getUser = vi.fn().mockResolvedValue({ data: { user: { id: 'u-existing', email: 'existing@example.com' } }, error: null })
+      mockAuth(getUser)
+      const tx = mockTx([{ plan: 'monthly' }])
+      mockWithUserContext.mockImplementation(async (_userId, fn) => fn(tx as never))
+
+      // Call getSessionUser() three times in a row, as multiple separate
+      // requests/page loads for the same already-existing user would.
+      await getSessionUser()
+      await getSessionUser()
+      await getSessionUser()
+
+      expect(tx.onConflictDoUpdate).toHaveBeenCalledTimes(3)
+      for (const call of tx.onConflictDoUpdate.mock.calls) {
+        // set is EXACTLY { email }, never referredByCode, on every single call.
+        expect(call[0]).toEqual(expect.objectContaining({ set: { email: 'existing@example.com' } }))
+        expect(call[0].set).not.toHaveProperty('referredByCode')
+      }
+    })
   })
 })
 

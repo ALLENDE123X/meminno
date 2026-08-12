@@ -1,7 +1,9 @@
+import { cookies } from 'next/headers'
 import { createClient } from '@/lib/supabase/server'
 import { withUserContext } from '@/lib/db'
 import { users } from '@/lib/db/schema'
 import { logger } from '@/lib/logger'
+import { REFERRAL_COOKIE_NAME, normalizeReferralCode } from '@/lib/referral'
 
 export type SessionResult =
   | { ok: true; userId: string; plan: string }
@@ -98,16 +100,35 @@ export async function getSessionUser(req?: Request): Promise<SessionResult> {
  * app - the RLS policy's withCheck (`meminno_current_user_id() = id`) only
  * passes because the transaction's identity GUC is set to the same id being
  * inserted.
+ *
+ * MEM-018 (issue #52): also the one place `users.referredByCode` gets set.
+ * The `meminno_ref` cookie (see lib/referral.ts) is read on every call, but
+ * only ever lands in this row on a true first INSERT - it is included in
+ * `values` (the insert branch) but deliberately absent from
+ * `onConflictDoUpdate`'s `set` (the update branch), which stays exactly
+ * `{ email }`. That is what "set once at signup, never overwritten after"
+ * actually enforces at the SQL level: on a conflict, Postgres runs `SET
+ * email = excluded.email` and nothing else, so referredByCode is provably
+ * untouched no matter what a stale/different meminno_ref cookie happens to
+ * still say on a later call - see tests/unit/session.test.ts for the test
+ * proving this survives 2+ subsequent calls unchanged.
  */
 async function ensureUserRow(userId: string, email: string): Promise<string> {
+  const referredByCode = await readReferralCookie()
   const [profile] = await withUserContext(userId, (tx) =>
     tx
       .insert(users)
-      .values({ id: userId, email })
+      .values({ id: userId, email, ...(referredByCode ? { referredByCode } : {}) })
       .onConflictDoUpdate({ target: users.id, set: { email } })
       .returning({ plan: users.plan })
   )
   return profile?.plan ?? 'free'
+}
+
+/** Reads + normalizes the meminno_ref cookie, if present (see lib/referral.ts). */
+async function readReferralCookie(): Promise<string | null> {
+  const cookieStore = await cookies()
+  return normalizeReferralCode(cookieStore.get(REFERRAL_COOKIE_NAME)?.value)
 }
 
 /** Standard error body/status pair for a failed getSessionUser() result. */
