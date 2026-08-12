@@ -659,7 +659,7 @@ HARD STOP 6's two layers, same shape as `lib/notesLimits.ts`, own `podcast-gener
 
 ### Verification
 
-`npx tsc --noEmit`, `npm run lint` (0 errors, 0 warnings), `npm test` (**343 tests: 329 passed, 14 skipped, 32 files** — 40 new unit tests, plus the 2 opt-in live ones that skip by default), `npm run build` all clean. `npm run build` needed the `turbopack: { root: __dirname }` workaround documented in the lecture-recording section above; applied for the run and reverted before commit, same as that ticket.
+`npx tsc --noEmit`, `npm run lint` (0 errors, 0 warnings), `npm test` (**343 tests: 329 passed, 14 skipped** — 40 new unit tests, plus the 2 opt-in live ones that skip by default; 354/332/22 after merging MEM-012's own suite in mid-branch), `npm run build` all clean. `npm run build` needed the `turbopack: { root: __dirname }` workaround documented in the lecture-recording section above; applied for the run and reverted before commit, same as that ticket.
 
 **The whole chain was then run for real, no mocks at any layer** (`tests/integration/podcast.test.ts`): real Gemini multi-speaker TTS → real PCM → WAV container → real upload into the real private bucket → real signed URL → real HTTP fetch returning byte-identical audio → and an unsigned public URL for the same object correctly refused, which is the actual proof the bucket is private. The object was deleted afterwards; the bucket was confirmed empty.
 
