@@ -47,20 +47,23 @@ import { documents, podcasts } from '@/lib/db/schema'
 //     row, since a second take is cheap and often what you want), there is
 //     no cheap second take here. A future explicit `?regenerate=true` is the
 //     right way to add one, when a UI actually asks for it.
-//   - A 'pending'/'generating' row is treated as IN FLIGHT and rejected with
-//     409, not joined and not duplicated. Generation is synchronous, so a
-//     second concurrent request would spend a second full budget unit and a
-//     second ~$0.10 producing a duplicate of what the first request is
-//     already producing — the exact double-charge case a mashed button
-//     causes. (The burst limiter narrows that window but does not close it:
-//     it allows several requests within its window, and this one runs for
-//     minutes.) 409 also fails safe against a genuinely stuck row: a caller
-//     sees "already generating" rather than being charged again.
+//   - A RECENT 'pending'/'generating' row is treated as IN FLIGHT and
+//     rejected with 409, not joined and not duplicated. Generation is
+//     synchronous, so a second concurrent request would spend a second full
+//     budget unit and a second ~$0.10 producing a duplicate of what the first
+//     request is already producing — the exact double-charge case a mashed
+//     button causes. (The burst limiter narrows that window but does not
+//     close it: it allows several requests within its window, and this one
+//     runs for minutes.)
+//   - A STALE 'pending'/'generating' row (older than STALE_GENERATING_MS) is
+//     marked failed and the request regenerates. See that constant for why
+//     this is provable rather than a heuristic — and why the route would
+//     otherwise brick a document permanently.
 //   - A 'failed' row is NOT a blocker — a retry after a failure creates a
 //     new row and generates for real. The failed row is left in place as the
 //     record of what went wrong.
 // Only ONE row is looked at: the newest for this document. That is what makes
-// the three cases above mutually exclusive and cheap to reason about.
+// the cases above mutually exclusive and cheap to reason about.
 //
 // maxDuration — this route is by far the longest-running in the codebase, and
 // the number is pinned to the platform ceiling on purpose, not padded up to
@@ -109,6 +112,31 @@ const REASON_STATUS: Record<PodcastFailureReason, number> = {
   api_error: 502,
   upload_failed: 502,
 }
+
+// A 'generating' row older than this is PROVABLY dead, not merely suspicious:
+// generation is synchronous and `maxDuration = 300` is a hard Vercel
+// Hobby/Fluid Compute platform ceiling (see the maxDuration note above), so no
+// live request can still be working on a row past 300s — the platform has
+// already killed it. 10 minutes is 2x that, slack for clock skew between the
+// DB's `now()` and this function's clock, plus any queueing before the handler
+// starts.
+//
+// WITHOUT THIS, A KILLED FUNCTION BRICKS A DOCUMENT PERMANENTLY. Nothing runs
+// after the platform kills a function, so the row it left at 'generating' is
+// never marked failed: the budget unit is already spent, every later POST
+// 409s forever, every GET leaves MEM-016's poller spinning forever, and the
+// only repair is a manual DB UPDATE this repo has no admin tooling for. On the
+// free plan (2/day) that is half a day's allowance plus a permanently unusable
+// document, whose only user-side workaround — delete and re-upload — cascades
+// away that document's notes/flashcards/quizzes too. Recovering it here is
+// cheap and needs no background job.
+const STALE_GENERATING_MS = 10 * 60 * 1000
+
+// The `error_message` recorded for a row recovered by the rule above. A
+// distinct value from the generation modules' own typed reasons on purpose:
+// this row did not fail a vendor call, it was killed mid-flight, and that is
+// worth telling apart in the data.
+const TIMED_OUT_REASON = 'timed_out'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -235,10 +263,23 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
     return NextResponse.json({ podcast: publicPodcast(existing), ...signed, existing: true }, { status: 200 })
   }
   if (existing && (existing.status === 'pending' || existing.status === 'generating')) {
-    return NextResponse.json(
-      { error: 'A podcast for this document is already being generated. Check back in a few minutes.', podcast: publicPodcast(existing) },
-      { status: 409 }
+    // Fresh enough that a real request could still be working on it -> 409.
+    // Older than the ceiling a live request can possibly survive -> that
+    // request was killed by the platform and nothing was left running to mark
+    // the row failed, so mark it here and fall through to regenerate. See
+    // STALE_GENERATING_MS for why this is provable rather than a guess.
+    const ageMs = Date.now() - new Date(existing.createdAt).getTime()
+    if (ageMs < STALE_GENERATING_MS) {
+      return NextResponse.json(
+        { error: 'A podcast for this document is already being generated. Check back in a few minutes.', podcast: publicPodcast(existing) },
+        { status: 409 }
+      )
+    }
+    logger.warn(
+      { userId, documentId, podcastId: existing.id, ageMs },
+      'Recovering a podcast row stranded mid-generation by a killed function'
     )
+    await markPodcastFailed(userId, existing.id, TIMED_OUT_REASON)
   }
 
   if (!doc.rawText?.trim()) {
@@ -259,6 +300,14 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
   const [podcast] = await withUserContext(userId, (tx) =>
     tx.insert(podcasts).values({ documentId, userId, status: 'generating' }).returning()
   )
+  if (!podcast) {
+    // Should be unreachable — an INSERT ... RETURNING either returns its row
+    // or throws. Guarded anyway because the alternative is dereferencing
+    // undefined into an opaque 500 with no log line, and the document was
+    // read ~a moment ago and could in principle have been deleted since.
+    logger.error({ userId, documentId }, 'Podcast row insert returned nothing')
+    return NextResponse.json({ error: "Couldn't start generating this podcast. Please try again in a moment." }, { status: 500 })
+  }
 
   const script = await generatePodcastScriptFromText(doc.rawText)
   if (!script.success) {
@@ -297,6 +346,19 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
       .where(and(eq(podcasts.id, podcast.id), eq(podcasts.userId, userId)))
       .returning()
   )
+  if (!ready) {
+    // Genuinely reachable, unlike the insert guard: this UPDATE matches zero
+    // rows if the row vanished during the ~250s generation window, and
+    // `podcasts.document_id` is ON DELETE CASCADE — deleting the source
+    // document mid-generation takes its podcast row with it. The audio is
+    // uploaded and paid for either way, so this is logged loudly and returned
+    // as a clean error rather than dereferenced into an unhandled 500.
+    logger.error(
+      { userId, documentId, podcastId: podcast.id, storagePath: upload.storagePath },
+      'Podcast row disappeared mid-generation (document deleted?); generated audio is orphaned in Storage'
+    )
+    return NextResponse.json({ error: 'This document was changed or removed while its podcast was generating.' }, { status: 409 })
+  }
 
   // A fresh signed URL is returned with the row so a client that just waited
   // minutes for this doesn't need a second round trip to play it. It is minted

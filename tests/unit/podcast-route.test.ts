@@ -222,9 +222,11 @@ describe('POST /api/documents/[id]/podcast', () => {
     expect(signMock).toHaveBeenCalledWith(READY_ROW.storagePath)
   })
 
-  it('rejects a duplicate request while a generation is already in flight', async () => {
+  it.each(['pending', 'generating'])('rejects a duplicate request while a recent %s row is in flight', async (status) => {
     armHappyPath()
-    podcastRows = [{ ...READY_ROW, status: 'generating', storagePath: null, durationSeconds: null }]
+    podcastRows = [
+      { ...READY_ROW, status, storagePath: null, durationSeconds: null, createdAt: new Date(Date.now() - 30_000) },
+    ]
 
     const res = await POST(makeRequest(), makeContext())
     const body = await res.json()
@@ -233,6 +235,48 @@ describe('POST /api/documents/[id]/podcast', () => {
     expect(body.error).toMatch(/already being generated/i)
     expect(claimPodcastBudgetMock).not.toHaveBeenCalled()
     expect(generateScriptMock).not.toHaveBeenCalled()
+  })
+
+  it('still 409s a generating row right up to the staleness cutoff', async () => {
+    // Boundary pin: 9 minutes is inside the 10-minute cutoff, so a genuinely
+    // slow-but-alive generation is never stolen out from under itself.
+    armHappyPath()
+    podcastRows = [
+      { ...READY_ROW, status: 'generating', storagePath: null, durationSeconds: null, createdAt: new Date(Date.now() - 9 * 60_000) },
+    ]
+
+    const res = await POST(makeRequest(), makeContext())
+    expect(res.status).toBe(409)
+    expect(claimPodcastBudgetMock).not.toHaveBeenCalled()
+  })
+
+  it('recovers a stranded generating row instead of bricking the document forever', async () => {
+    // The blocker this guard exists for: a function killed at the 300s
+    // maxDuration ceiling leaves a row at 'generating' with nothing running to
+    // mark it failed. Past 10 minutes that row is provably dead, so it is
+    // marked failed and the request regenerates rather than 409ing forever.
+    armHappyPath()
+    podcastRows = [
+      { ...READY_ROW, status: 'generating', storagePath: null, durationSeconds: null, createdAt: new Date(Date.now() - 11 * 60_000) },
+    ]
+
+    const res = await POST(makeRequest(), makeContext())
+
+    expect(res.status).toBe(201)
+    expect(updateSets[0]).toEqual({ status: 'failed', errorMessage: 'timed_out' })
+    expect(claimPodcastBudgetMock).toHaveBeenCalledTimes(1)
+    expect(generateScriptMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('recovers a stranded pending row the same way', async () => {
+    armHappyPath()
+    podcastRows = [
+      { ...READY_ROW, status: 'pending', storagePath: null, durationSeconds: null, createdAt: new Date(Date.now() - 60 * 60_000) },
+    ]
+
+    const res = await POST(makeRequest(), makeContext())
+    expect(res.status).toBe(201)
+    expect(updateSets[0]).toEqual({ status: 'failed', errorMessage: 'timed_out' })
   })
 
   it('regenerates after a previous failure rather than blocking on the failed row', async () => {
@@ -345,6 +389,27 @@ describe('POST /api/documents/[id]/podcast', () => {
     ])
     expect(uploadMock).toHaveBeenCalledWith(USER_ID, PODCAST_ID, expect.any(Buffer))
     expect(generateAudioMock).toHaveBeenCalledWith(SCRIPT_TURNS)
+  })
+
+  it('returns a clean 409 rather than an unhandled 500 if the row vanishes mid-generation', async () => {
+    // podcasts.document_id is ON DELETE CASCADE, so deleting the source
+    // document during the ~250s generation window takes the podcast row with
+    // it and the final UPDATE matches zero rows.
+    armHappyPath()
+    updateRows = []
+
+    const res = await POST(makeRequest(), makeContext())
+    expect(res.status).toBe(409)
+    expect(signMock).not.toHaveBeenCalled()
+  })
+
+  it('returns a clean 500 rather than an unhandled throw if the insert returns nothing', async () => {
+    armHappyPath()
+    insertRows = []
+
+    const res = await POST(makeRequest(), makeContext())
+    expect(res.status).toBe(500)
+    expect(generateScriptMock).not.toHaveBeenCalled()
   })
 
   it('never exposes the raw storage path to a caller', async () => {
