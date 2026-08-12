@@ -61,7 +61,7 @@ Content:
 - Cover the real substance of the material - the concepts, facts, and structure actually present in the source - not a vague gloss over it.
 - Base everything strictly on the provided material. Do not add outside facts, and do not invent details the material does not support.
 - Open with a brief, natural cold-open that sets up what this material covers - no "Welcome to the show" radio-announcer framing. Close with a short, natural wrap-up, not an abrupt stop.
-- Target a natural 5-7 minute spoken conversation at a conversational pace (about 150 words per minute), which works out to roughly 750-1050 total words across all turns combined. Do not pad to hit a word count - a slightly shorter, tighter conversation that genuinely covers the material well is better than a bloated one that doesn't.`
+- Target a natural 3.5-5 minute spoken conversation at a conversational pace (about 150 words per minute), which works out to roughly 500-700 total words across all turns combined (issue #63: lowered from an original 750-1050 target after real production TTS output showed that word count runs close enough to podcastAudio.ts's hard 7,000-character synthesis ceiling to leave no real safety margin). Do not pad to hit a word count - a slightly shorter, tighter conversation that genuinely covers the material well is better than a bloated one that doesn't.`
 
 const GENERATE_PODCAST_SCRIPT_TOOL_NAME = 'generate_podcast_script'
 
@@ -114,17 +114,56 @@ const GENERATE_PODCAST_SCRIPT_TOOL: OpenAI.Chat.Completions.ChatCompletionTool =
 }
 
 // Word count is only ever an approximation of spoken duration, so these are
-// sanity bounds around the system prompt's ~750-1050 word target (see
+// sanity bounds around the system prompt's ~500-700 word target (see
 // SYSTEM_PROMPT above), not an attempt to enforce that target exactly -
 // mirroring how lib/flashcardsGeneration.ts's/lib/quizGeneration.ts's schema
 // bounds are deliberately looser than their own prompt targets, existing
 // only to catch a genuinely broken or abusive response (e.g. a handful of
 // words, or the whole source document dumped back verbatim) rather than to
 // police the model's judgment call on pacing.
-const MIN_TOTAL_WORDS = 400
-const MAX_TOTAL_WORDS = 1600
+// Exported (rather than kept module-private like MIN_TURNS/MAX_TURNS below)
+// specifically so tests/unit/podcastScript.test.ts can assert the
+// MAX_TOTAL_WORDS <-> podcastAudio.ts MAX_SCRIPT_CHARS invariant this ticket
+// exists to fix directly against the real constants, instead of a hardcoded
+// literal that could silently drift from either module.
+export const MIN_TOTAL_WORDS = 400
 
-// A 5-7 minute natural conversation with real backchanneling/interruptions
+// MAX_TOTAL_WORDS (issue #63 post-ship fix, 2026-08-11): this used to be
+// 1600, sized by naive word-count arithmetic with no regard for
+// lib/podcastAudio.ts's downstream MAX_SCRIPT_CHARS = 7_000 hard TTS-input
+// ceiling. That let a dense source document (a real 50+ page econometrics
+// PDF, hit live by the founder's own usage) push the model toward the top of
+// its word budget and produce a script that generated_podcast_script/zod
+// happily accepted but podcastAudio.ts then hard-rejected as
+// "script_too_long" - a real production failure, not a hypothetical.
+//
+// Recomputed from REAL measured output, not a words-times-average-word-length
+// guess: lib/podcastAudio.ts's own header comment records a genuine live
+// synthesis run from MEM-014 - an 831-word two-speaker script whose built TTS
+// prompt (the exact string checked against MAX_SCRIPT_CHARS, including the
+// "A: "/"B: " speaker-prefix and newline formatting overhead
+// buildMultiSpeakerPrompt() adds per turn) measured 5,220 characters. That is
+// ~6.28 characters per word of natural spoken dialogue - punctuation,
+// contractions, and per-turn formatting overhead all included, which is
+// exactly the kind of real-world density a naive arithmetic estimate misses.
+// Applying that measured ratio to the *old* 1600-word ceiling predicts
+// ~10,050 characters, matching the issue's own observed 9,000-10,000 char
+// range almost exactly - strong confirmation the ratio is real, not an
+// artifact of one lucky/unlucky sample.
+//
+// New ceiling: 800 words x ~6.28 chars/word ~= 5,025 characters, which is
+// ~72% of the 7,000-char cap - a genuine ~28% safety margin, not a
+// razor-thin one (contrast the 300s Vercel maxDuration budget elsewhere in
+// this codebase, whose ~17% margin is explicitly called out in
+// ARCHITECTURE.md as "not a comfortable margin"). Even in the pathological
+// case of MAX_TURNS (200) worth of very short turns at exactly this word
+// count - maximizing the fixed per-turn "A: "/newline formatting overhead
+// baked into the ratio above - the built prompt still lands around 86% of
+// the cap, comfortably inside it. See ARCHITECTURE.md's MEM-013/MEM-014
+// sections for the full write-up.
+export const MAX_TOTAL_WORDS = 800
+
+// A 3.5-5 minute natural conversation with real backchanneling/interruptions
 // (per the system prompt) is made of many short exchanges, not a handful of
 // long speeches - so the floor guards against a degenerate "monologue
 // arbitrarily split into two or three turns" response, and the ceiling is a

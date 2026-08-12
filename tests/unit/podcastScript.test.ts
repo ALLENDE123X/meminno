@@ -28,7 +28,14 @@ vi.mock('@/lib/logger', () => ({
 
 // Imported after the mocks above so the module under test picks up the
 // mocked openai constructor.
-import { generatePodcastScriptFromText, generatedPodcastScriptSchema } from '@/lib/podcastScript'
+import { generatePodcastScriptFromText, generatedPodcastScriptSchema, MIN_TOTAL_WORDS, MAX_TOTAL_WORDS } from '@/lib/podcastScript'
+// Issue #63: the actual invariant that broke in production wasn't the word
+// count itself, it was the TTS prompt built FROM that word count exceeding
+// podcastAudio.ts's own hard character ceiling. Importing the real
+// buildMultiSpeakerPrompt/MAX_SCRIPT_CHARS here (rather than reimplementing
+// the transformation or hardcoding 7000) tests that cross-module invariant
+// directly, against the real constants, so it can't silently drift.
+import { buildMultiSpeakerPrompt, MAX_SCRIPT_CHARS } from '@/lib/podcastAudio'
 
 function toolCallResponse(input: Record<string, unknown>) {
   return {
@@ -49,11 +56,13 @@ function toolCallResponse(input: Record<string, unknown>) {
   }
 }
 
-// ~900 words split across alternating A/B turns with real backchanneling -
+// ~565 words split across alternating A/B turns with real backchanneling -
 // deliberately within both the MIN_TURNS/MAX_TURNS and
-// MIN_TOTAL_WORDS/MAX_TOTAL_WORDS sanity bounds so it represents a genuinely
-// valid script, not just a minimal one.
-function makeValidTurns(turnCount = 24, wordsPerLongTurn = 45) {
+// MIN_TOTAL_WORDS/MAX_TOTAL_WORDS sanity bounds (issue #63 lowered
+// MAX_TOTAL_WORDS to 800, so this default was reduced from its original
+// wordsPerLongTurn=45/~840 words to stay comfortably inside the new ceiling)
+// so it represents a genuinely valid script, not just a minimal one.
+function makeValidTurns(turnCount = 24, wordsPerLongTurn = 30) {
   const turns: Array<{ speaker: 'A' | 'B'; text: string }> = []
   for (let i = 0; i < turnCount; i++) {
     const speaker: 'A' | 'B' = i % 2 === 0 ? 'A' : 'B'
@@ -71,7 +80,74 @@ function makeValidTurns(turnCount = 24, wordsPerLongTurn = 45) {
 
 const VALID_SCRIPT = { turns: makeValidTurns() }
 
+function totalWordCount(turns: Array<{ text: string }>): number {
+  return turns.reduce((sum, t) => sum + t.text.trim().split(/\s+/).filter(Boolean).length, 0)
+}
+
+/**
+ * Builds a script with an EXACT total word count, spread evenly across
+ * `turnCount` alternating A/B turns (default 20, well inside
+ * MIN_TURNS/MAX_TURNS), for precise boundary testing around
+ * MIN_TOTAL_WORDS/MAX_TOTAL_WORDS - unlike makeValidTurns above, which is
+ * meant to be "a realistic valid script," not an exact word count.
+ */
+function makeTurnsWithExactWordCount(totalWords: number, turnCount = 20): Array<{ speaker: 'A' | 'B'; text: string }> {
+  const base = Math.floor(totalWords / turnCount)
+  let remainder = totalWords - base * turnCount
+  const turns: Array<{ speaker: 'A' | 'B'; text: string }> = []
+  for (let i = 0; i < turnCount; i++) {
+    let wordsInTurn = base
+    if (remainder > 0) {
+      wordsInTurn += 1
+      remainder -= 1
+    }
+    const text = Array.from({ length: Math.max(wordsInTurn, 1) }, (_, w) => `word${w}`).join(' ')
+    turns.push({ speaker: i % 2 === 0 ? 'A' : 'B', text })
+  }
+  return turns
+}
+
+// A pool of realistic spoken-dialogue lines - short backchannels and longer
+// explanations, mirroring the system prompt's own real style - used instead
+// of synthetic "word0 word1..." placeholders for the character-density test
+// below. This is deliberately real natural language, including punctuation
+// and contractions, because the whole point of that test is measuring the
+// same kind of chars-per-word density lib/podcastAudio.ts's own MAX_SCRIPT_CHARS
+// comment measured from a real generated script (~6.28 chars/word), not an
+// artificial token pattern that could over- or under-estimate real density.
+const NATURAL_DIALOGUE_LINES = [
+  "Wait, really? That's kind of surprising, actually.",
+  "Yeah, exactly - I think that's the whole point here.",
+  "Mhm, right, and that connects back to what you were saying earlier.",
+  "Huh, I honestly hadn't thought about it that way before.",
+  "Totally, and that's why this trips people up in practice, isn't it?",
+  "Okay so basically, once you increase the sample size, the standard errors shrink and your estimates get a lot more precise.",
+  "Right, because it inflates the variance of your coefficient estimates without necessarily biasing them.",
+  "So the core idea here is that under these assumptions, the estimator turns out to be the best linear unbiased one you can get.",
+]
+
+/** A script with an exact total word count built from real, natural spoken-style dialogue. */
+function makeNaturalDialogueTurns(totalWords: number): Array<{ speaker: 'A' | 'B'; text: string }> {
+  const turns: Array<{ speaker: 'A' | 'B'; text: string }> = []
+  let wordsUsed = 0
+  let lineIndex = 0
+  while (wordsUsed < totalWords) {
+    const line = NATURAL_DIALOGUE_LINES[lineIndex % NATURAL_DIALOGUE_LINES.length]
+    lineIndex += 1
+    const lineWords = line.trim().split(/\s+/)
+    const remaining = totalWords - wordsUsed
+    const text = lineWords.length <= remaining ? line : lineWords.slice(0, remaining).join(' ')
+    turns.push({ speaker: turns.length % 2 === 0 ? 'A' : 'B', text })
+    wordsUsed += Math.min(lineWords.length, remaining)
+  }
+  return turns
+}
+
 describe('generatedPodcastScriptSchema', () => {
+  it('keeps a real gap between MIN_TOTAL_WORDS and MAX_TOTAL_WORDS (sanity check on the two bounds themselves)', () => {
+    expect(MIN_TOTAL_WORDS).toBeLessThan(MAX_TOTAL_WORDS)
+  })
+
   it('accepts a fully valid script', () => {
     expect(generatedPodcastScriptSchema.safeParse(VALID_SCRIPT).success).toBe(true)
   })
@@ -113,12 +189,31 @@ describe('generatedPodcastScriptSchema', () => {
     expect(generatedPodcastScriptSchema.safeParse({ turns }).success).toBe(false)
   })
 
-  it('rejects a script that is far too long to be podcast-length (well over 1600 words)', () => {
+  it(`rejects a script that is far too long to be podcast-length (well over MAX_TOTAL_WORDS = ${MAX_TOTAL_WORDS})`, () => {
     const longText = Array.from({ length: 200 }, (_, w) => `word${w}`).join(' ')
     const turns = Array.from({ length: 12 }, (_, i) => ({
       speaker: i % 2 === 0 ? ('A' as const) : ('B' as const),
       text: longText,
     }))
+    // 12 x 200 = 2,400 words - well over MAX_TOTAL_WORDS regardless of its
+    // exact value, so this stays a valid "too long" fixture across tuning.
+    expect(generatedPodcastScriptSchema.safeParse({ turns }).success).toBe(false)
+  })
+
+  // Issue #63: MAX_TOTAL_WORDS was lowered from 1600 to 800 specifically
+  // because a script at the old ceiling produced a TTS prompt far over
+  // podcastAudio.ts's MAX_SCRIPT_CHARS. Pin the new boundary explicitly so a
+  // future casual bump of this constant doesn't quietly reintroduce the bug
+  // without at least failing this test.
+  it(`accepts a script at exactly MAX_TOTAL_WORDS (${MAX_TOTAL_WORDS} words)`, () => {
+    const turns = makeTurnsWithExactWordCount(MAX_TOTAL_WORDS)
+    expect(totalWordCount(turns)).toBe(MAX_TOTAL_WORDS)
+    expect(generatedPodcastScriptSchema.safeParse({ turns }).success).toBe(true)
+  })
+
+  it(`rejects a script one word over MAX_TOTAL_WORDS (${MAX_TOTAL_WORDS + 1} words)`, () => {
+    const turns = makeTurnsWithExactWordCount(MAX_TOTAL_WORDS + 1)
+    expect(totalWordCount(turns)).toBe(MAX_TOTAL_WORDS + 1)
     expect(generatedPodcastScriptSchema.safeParse({ turns }).success).toBe(false)
   })
 
@@ -139,6 +234,37 @@ describe('generatedPodcastScriptSchema', () => {
     expect(generatedPodcastScriptSchema.safeParse(null).success).toBe(false)
     expect(generatedPodcastScriptSchema.safeParse('not an object').success).toBe(false)
     expect(generatedPodcastScriptSchema.safeParse({}).success).toBe(false)
+  })
+})
+
+// Issue #63's real invariant: a schema-valid script (accepted here) must
+// also produce a TTS prompt that podcastAudio.ts's own MAX_SCRIPT_CHARS
+// accepts downstream - that link is exactly what broke in production
+// (MAX_TOTAL_WORDS = 1600 comfortably passed the schema while its built TTS
+// prompt ran 9,000-10,000 characters, well past the 7,000-char ceiling).
+// Tested directly against real natural-language dialogue text and the real
+// buildMultiSpeakerPrompt()/MAX_SCRIPT_CHARS from lib/podcastAudio.ts, not
+// indirectly via the word-count bound alone.
+describe('MAX_TOTAL_WORDS stays safely under podcastAudio.ts MAX_SCRIPT_CHARS', () => {
+  it(`a schema-accepted script at exactly MAX_TOTAL_WORDS (${MAX_TOTAL_WORDS} words) of real dialogue produces a TTS prompt comfortably under MAX_SCRIPT_CHARS (${MAX_SCRIPT_CHARS} chars)`, () => {
+    const turns = makeNaturalDialogueTurns(MAX_TOTAL_WORDS)
+    expect(totalWordCount(turns)).toBe(MAX_TOTAL_WORDS)
+    expect(generatedPodcastScriptSchema.safeParse({ turns }).success).toBe(true)
+
+    // The exact transformation podcastAudio.ts applies before checking
+    // MAX_SCRIPT_CHARS - same function, same constant, no reimplementation.
+    const prompt = buildMultiSpeakerPrompt(turns, ['A', 'B'])
+    expect(prompt.length).toBeLessThan(MAX_SCRIPT_CHARS)
+    // A genuine safety margin, not a razor-thin one: even at the maximum
+    // allowed word count, real dialogue stays comfortably under 90% of the
+    // character cap rather than merely squeaking under 100% of it.
+    expect(prompt.length).toBeLessThan(MAX_SCRIPT_CHARS * 0.9)
+  })
+
+  it('the OLD MAX_TOTAL_WORDS (1600) would have exceeded MAX_SCRIPT_CHARS - the actual bug this ticket fixes', () => {
+    const turns = makeNaturalDialogueTurns(1600)
+    const prompt = buildMultiSpeakerPrompt(turns, ['A', 'B'])
+    expect(prompt.length).toBeGreaterThan(MAX_SCRIPT_CHARS)
   })
 })
 

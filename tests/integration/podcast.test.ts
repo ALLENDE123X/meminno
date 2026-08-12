@@ -17,7 +17,7 @@ import { uploadPodcastAudio, createPodcastSignedUrl, podcastObjectPath, PODCAST_
 // it in CI - a per-push billed TTS call is exactly the runaway-cost shape
 // CLAUDE.md HARD STOP 6 exists to prevent.
 //
-// The script below is deliberately two short turns, not a real 5-7 minute
+// The script below is deliberately two short turns, not a real several-minute
 // podcast: it exercises every step of the chain for a few tenths of a cent
 // instead of the ~$0.10 a full-length synthesis costs.
 const LIVE = process.env.RUN_LIVE_PODCAST_TEST === 'true' && !!process.env.GEMINI_API_KEY && !!process.env.SUPABASE_SERVICE_ROLE_KEY

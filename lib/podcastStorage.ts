@@ -66,7 +66,7 @@ import { PODCAST_AUDIO_FILE_EXTENSION, PODCAST_AUDIO_MIME_TYPE } from '@/lib/pod
 
 export const PODCAST_BUCKET = 'podcasts'
 
-// One hour. A 5-7 minute podcast has to survive a whole listening session,
+// One hour. A several-minute podcast has to survive a whole listening session,
 // and `<audio>` re-issues range requests on every seek and replay, so an
 // expiry measured in minutes would break scrubbing back through a lecture
 // halfway in. An hour covers a full listen plus replays with room to spare.
