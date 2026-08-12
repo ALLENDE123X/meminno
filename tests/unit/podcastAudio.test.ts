@@ -87,8 +87,9 @@ describe('generatePodcastAudio', () => {
     const oneSpeaker = await generatePodcastAudio([{ speaker: 'Alex', text: 'A monologue, not a podcast.' }])
     const threeSpeakers = await generatePodcastAudio([...SCRIPT, { speaker: 'Jordan', text: 'A third voice.' }])
 
-    expect(oneSpeaker).toMatchObject({ success: false, reason: 'empty_input' })
-    expect(threeSpeakers).toMatchObject({ success: false, reason: 'empty_input' })
+    // invalid_script, NOT empty_input: there was content, its shape was wrong.
+    expect(oneSpeaker).toMatchObject({ success: false, reason: 'invalid_script' })
+    expect(threeSpeakers).toMatchObject({ success: false, reason: 'invalid_script' })
     expect(mockGenerateContent).not.toHaveBeenCalled()
   })
 
@@ -308,5 +309,38 @@ describe('stripStageDirections', () => {
   it('is idempotent', () => {
     const once = stripStageDirections('[sighs]  So,   ATP.')
     expect(stripStageDirections(once)).toBe(once)
+  })
+})
+
+describe('stripStageDirections leaves real bracket notation alone', () => {
+  // This is a study app: a podcast about programming or maths legitimately
+  // contains bracket notation, and silently corrupting real course material
+  // is a worse outcome than one stray "[laughs]" being read aloud. Flagged in
+  // MEM-014's review against the original naive /\[.*?\]/ pattern.
+  it('keeps array indexing attached to an identifier', () => {
+    expect(stripStageDirections('So the array a[0] holds the first element.')).toBe(
+      'So the array a[0] holds the first element.'
+    )
+    expect(stripStageDirections('You loop while x[i] is less than arr[idx].')).toBe(
+      'You loop while x[i] is less than arr[idx].'
+    )
+  })
+
+  it('keeps bracketed spans containing digits or operators', () => {
+    expect(stripStageDirections('Index [0] and then [n+1].')).toBe('Index [0] and then [n+1].')
+  })
+
+  it('keeps a short standalone index like [i]', () => {
+    expect(stripStageDirections('The value [i] changes each pass.')).toBe('The value [i] changes each pass.')
+  })
+
+  it('still strips genuine directions in the same sentence as bracket notation', () => {
+    expect(stripStageDirections('[laughs] Right, so a[0] is the first one. [pause]')).toBe(
+      'Right, so a[0] is the first one.'
+    )
+  })
+
+  it('strips two adjacent directions', () => {
+    expect(stripStageDirections('[laughs] [pause] Sure.')).toBe('Sure.')
   })
 })

@@ -24,19 +24,26 @@ import { logger } from '@/lib/logger'
 // measurements from those runs.
 
 /**
- * One speaker-tagged turn of a podcast script. Structurally identical to
- * what MEM-013's `generatePodcastScript` returns, but declared HERE rather
- * than imported from `lib/podcastScript.ts` on purpose: MEM-013 and MEM-014
- * are separate tickets developed in parallel worktrees, and this module has
- * no reason to depend on that one at build time. MEM-015 is the piece that
- * wires the two together, and TypeScript structural typing means MEM-013's
- * array will satisfy this type without either side importing the other.
+ * One speaker-tagged turn of a podcast script, as this module needs it.
  *
- * `speaker` is whatever label MEM-013 chose ('A'/'B', 'Alex'/'Sam', ...) —
- * this module never assumes particular names, it reads the distinct labels
- * out of the turns themselves.
+ * Deliberately NOT imported from `lib/podcastScript.ts`, even though MEM-013
+ * has since merged and exports its own `PodcastScriptTurn`. Two reasons:
+ *
+ * 1. MEM-013's type narrows `speaker` to the literal union `'A' | 'B'`. This
+ *    module genuinely does not care what the labels are — it reads the
+ *    distinct labels out of the turns themselves and maps them to voices in
+ *    order of first appearance — so binding to that union would couple
+ *    synthesis to a naming choice that belongs to script generation.
+ * 2. Keeping the dependency one-directional (MEM-015 wires the two together;
+ *    neither half imports the other) means either can change independently.
+ *
+ * MEM-013's `PodcastScriptTurn` is assignable to this type (`'A' | 'B'` is a
+ * subtype of `string`), so `generatePodcastAudio(script.turns)` type-checks
+ * with no adapter. Named `PodcastAudioTurn` rather than `PodcastScriptTurn`
+ * specifically so MEM-015 can import from both modules without a collision or
+ * an alias.
  */
-export type PodcastScriptTurn = { speaker: string; text: string }
+export type PodcastAudioTurn = { speaker: string; text: string }
 
 export type GeneratePodcastAudioResult =
   | {
@@ -49,7 +56,13 @@ export type GeneratePodcastAudioResult =
     }
   | {
       success: false
-      reason: 'not_configured' | 'empty_input' | 'script_too_long' | 'invalid_response' | 'api_error'
+      // `empty_input` means there was nothing to say at all; `invalid_script`
+      // means there WAS content but its shape is unusable (not exactly two
+      // speakers). Kept as separate discriminators because they are different
+      // failures with different fixes: the first is a caller/user-facing empty
+      // state, the second is an upstream generation bug worth surfacing
+      // distinctly in MEM-015's routing and logs.
+      reason: 'not_configured' | 'empty_input' | 'invalid_script' | 'script_too_long' | 'invalid_response' | 'api_error'
       message: string
     }
 
@@ -205,16 +218,35 @@ export function wrapPcmInWavContainer(pcm: Buffer, format: PcmFormat): Buffer {
  *    no expressive-tag feature, so a stray "[laughs]" is simply READ ALOUD in
  *    a finished podcast. Cheap insurance at the last point before synthesis,
  *    where it holds regardless of which upstream produced the script.
- *    (An unclosed `[` with no matching bracket is left alone deliberately —
- *    eating everything after a stray bracket would destroy real dialogue.)
  * 2. **Collapse whitespace**, so a newline inside one turn cannot masquerade
  *    as the start of another speaker's line in the transcript below.
  *
+ * THE MATCH IS DELIBERATELY NARROW, and the bias is toward stripping too
+ * little rather than too much. This is a study app: a podcast about
+ * programming or maths legitimately contains bracket notation, and a naive
+ * `\[.*?\]` turns "the array `a[0]`" into "the array a" — silently corrupting
+ * real course material, which is a far worse outcome than one stray "[laughs]"
+ * being read aloud. So a span only counts as a stage direction when all of
+ * these hold:
+ *
+ *   - it starts at the beginning of the text or after whitespace, which rules
+ *     out every subscript/index form (`a[0]`, `x[i]`, `arr[idx]`) since those
+ *     attach directly to an identifier with no space;
+ *   - its first token is at least three letters, which rules out short index
+ *     variables written with a space ("the value [i]");
+ *   - it contains only letters, spaces, apostrophes and hyphens — no digits
+ *     and no operators, so `[n+1]` and `[0]` are never touched.
+ *
+ * An unclosed `[` with no matching bracket is likewise left alone: eating
+ * everything after a stray bracket would destroy real dialogue.
+ *
  * Idempotent: running it twice changes nothing.
  */
+const STAGE_DIRECTION_PATTERN = /(^|\s)\[[A-Za-z]{3,}[A-Za-z '-]*\]/g
+
 export function stripStageDirections(text: string): string {
   return text
-    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(STAGE_DIRECTION_PATTERN, '$1')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -225,13 +257,13 @@ export function stripStageDirections(text: string): string {
  * both speakers. The speaker labels here MUST match the `speaker` values in
  * speakerVoiceConfigs, which is why both are derived from the same list.
  */
-export function buildMultiSpeakerPrompt(turns: PodcastScriptTurn[], speakers: string[]): string {
+export function buildMultiSpeakerPrompt(turns: PodcastAudioTurn[], speakers: string[]): string {
   const transcript = turns.map((turn) => `${turn.speaker}: ${stripStageDirections(turn.text)}`).join('\n')
   return `TTS the following conversation between ${speakers[0]} and ${speakers[1]}:\n${transcript}`
 }
 
 /** Distinct speaker labels, in order of first appearance. */
-function distinctSpeakers(turns: PodcastScriptTurn[]): string[] {
+function distinctSpeakers(turns: PodcastAudioTurn[]): string[] {
   return [...new Set(turns.map((turn) => turn.speaker))]
 }
 
@@ -239,7 +271,7 @@ function distinctSpeakers(turns: PodcastScriptTurn[]): string[] {
  * Synthesizes a two-speaker podcast script into a single playable WAV file.
  * Never throws.
  */
-export async function generatePodcastAudio(turns: PodcastScriptTurn[]): Promise<GeneratePodcastAudioResult> {
+export async function generatePodcastAudio(turns: PodcastAudioTurn[]): Promise<GeneratePodcastAudioResult> {
   // Sanitize first, then drop anything left empty — a turn that was nothing
   // but a stage direction ("[both laugh]") has no speech in it and should not
   // reach the model as a bare "Alex:" line.
@@ -255,7 +287,7 @@ export async function generatePodcastAudio(turns: PodcastScriptTurn[]): Promise<
     logger.warn({ speakerCount: speakers.length }, 'Podcast script does not have exactly two speakers')
     return {
       success: false,
-      reason: 'empty_input',
+      reason: 'invalid_script',
       message: `Couldn't turn this script into audio. ${FALLBACK_MESSAGE}`,
     }
   }
