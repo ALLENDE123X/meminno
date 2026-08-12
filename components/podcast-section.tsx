@@ -227,11 +227,23 @@ export function PodcastSection({ documentId }: { documentId: string }) {
         return
       }
       if (res.status === 409) {
-        // Another request (this session's own retry, another tab, or a
-        // request this page wasn't open for) is already generating —
-        // start/resume the same polling loop the mount check uses.
-        setState({ phase: 'polling' })
-        startPolling()
+        const inFlightPodcast = body.podcast as PodcastRow | undefined
+        if (inFlightPodcast) {
+          // The "already in flight" 409 (route.ts's existing-podcast check):
+          // another request (this session's own retry, another tab, or a
+          // request this page wasn't open for) is already generating —
+          // start/resume the same polling loop the mount check uses.
+          setState({ phase: 'polling' })
+          startPolling()
+        } else {
+          // route.ts's *other* 409 shape, from later in the pipeline: the
+          // document was changed or removed while a previous generation was
+          // mid-flight (`podcasts.document_id` is `ON DELETE CASCADE`), so
+          // its final UPDATE matched no row. No `podcast` comes back with
+          // this one — there is nothing in flight to poll for, so this is a
+          // genuine, honest failure rather than "still generating".
+          setState({ phase: 'failed', message: typeof body.error === 'string' ? body.error : DEFAULT_FAILURE_MESSAGE })
+        }
         return
       }
       // 422/429/502/503 — route.ts always sends a specific, human-readable
@@ -246,11 +258,29 @@ export function PodcastSection({ documentId }: { documentId: string }) {
     }
   }, [documentId, startPolling])
 
+  // Reached only from the `timeout` state, i.e. only after POLL_MAX_MS has
+  // already elapsed — which is provably past the point route.ts's own
+  // STALE_GENERATING_MS recovery treats a 'generating' row as dead (see that
+  // constant's comment there: maxDuration=300 is a hard, confirmed platform
+  // ceiling, so no live request can still be working on a row past it).
+  // route.ts only performs that recovery — mark the row failed, allow a
+  // fresh generation — inside its POST handler; GET never mutates anything.
+  // So a bare GET recheck here can, in the genuinely-stranded case, only
+  // ever re-report 'generating' forever: the row is provably dead, but
+  // nothing about a GET can ever say so. Check first anyway (cheap, and it
+  // catches the podcast having actually finished right around our own
+  // deadline), but if it's still not resolved, escalate to a real POST —
+  // which either 409s harmlessly (the row turned out to still be within its
+  // 10-minute grace window server-side) and resumes polling from there, or
+  // triggers the real recovery and regenerates. Without this fallthrough,
+  // "Check status" on a truly stranded row is a closed loop that can never
+  // POST, so the document stays permanently un-podcastable and the spent
+  // daily budget unit is never reclaimed.
   const handleCheckAgain = useCallback(async () => {
     setState({ phase: 'polling' })
     const result = await fetchPodcastStatus(documentId)
-    applyResult(result, () => startPolling())
-  }, [documentId, applyResult, startPolling])
+    applyResult(result, () => void handleGenerate())
+  }, [documentId, applyResult, handleGenerate])
 
   const handleReloadPlayer = useCallback(async () => {
     const result = await fetchPodcastStatus(documentId)

@@ -270,6 +270,28 @@ describe('PodcastSection — generate-click flow', () => {
 
     expect(await screen.findByText('Network error, please try again.')).toBeInTheDocument()
   })
+
+  // Independent review finding (non-blocking): route.ts returns two
+  // different 409 shapes — "already in flight" (carries `podcast`) and
+  // "document changed/removed mid-generation" (no `podcast`, a genuine
+  // terminal failure, not something to poll for). Before this fix both were
+  // treated identically as "in flight", so the real failure message was
+  // never shown — the UI just said "Still generating" and then silently
+  // degraded to "No podcast yet" once the next poll 404'd.
+  it('a 409 with no podcast field (document changed/removed mid-generation) shows the real failure, not "still generating"', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(404, {}))
+    render(<PodcastSection documentId={DOCUMENT_ID} />)
+    const button = await screen.findByRole('button', { name: 'Generate podcast' })
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(409, { error: 'This document was changed or removed while its podcast was generating.' })
+    )
+    fireEvent.click(button)
+
+    expect(await screen.findByText('This document was changed or removed while its podcast was generating.')).toBeInTheDocument()
+    expect(screen.queryByText(/Still generating/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeEnabled()
+  })
 })
 
 describe('PodcastSection — failed-state retry', () => {
@@ -306,7 +328,7 @@ describe('PodcastSection — polling ceiling', () => {
     expect(screen.getByRole('button', { name: 'Check status' })).toBeEnabled()
   })
 
-  it('"Check status" after a timeout can resolve to ready', async () => {
+  it('"Check status" after a timeout resolves to ready when the quick recheck GET already finds it done', async () => {
     vi.useFakeTimers()
     fetchMock.mockResolvedValueOnce(jsonResponse(200, generatingPodcast()))
     render(<PodcastSection documentId={DOCUMENT_ID} />)
@@ -321,6 +343,65 @@ describe('PodcastSection — polling ceiling', () => {
     fireEvent.click(checkAgain)
     await flush()
 
+    expect(screen.getByTestId('podcast-audio')).toBeInTheDocument()
+  })
+
+  // The actual blocker from independent review: route.ts's stranded-row
+  // recovery (STALE_GENERATING_MS) only runs inside its POST handler — GET
+  // never mutates anything. A "Check status" action that only ever GETs, on
+  // a row that is genuinely stranded, can therefore only ever re-report
+  // 'generating' forever: a closed loop, zero POSTs, the document
+  // permanently un-podcastable. The fix is that "Check status" must escalate
+  // to a real POST once its own recheck GET still finds the row stuck — this
+  // pins that the escalation POST actually fires and actually recovers.
+  it('escalates to a real POST (not another GET) when the recheck after a timeout still finds the row stuck', async () => {
+    vi.useFakeTimers()
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, generatingPodcast())) // mount check
+    render(<PodcastSection documentId={DOCUMENT_ID} />)
+    await flush()
+    expect(screen.getByText(/Still generating/)).toBeInTheDocument()
+
+    fetchMock.mockResolvedValue(jsonResponse(200, generatingPodcast()))
+    await flush(335_000)
+    const checkAgain = screen.getByRole('button', { name: 'Check status' })
+
+    const callsBeforeClick = fetchMock.mock.calls.length
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, generatingPodcast())) // the recheck GET: still stuck
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, readyPodcast())) // route.ts's real recovery + regeneration
+
+    fireEvent.click(checkAgain)
+    await flush()
+
+    const newCalls = fetchMock.mock.calls.slice(callsBeforeClick)
+    expect(newCalls).toHaveLength(2)
+    expect(newCalls[0]).toEqual([`/api/documents/${DOCUMENT_ID}/podcast`]) // the cheap recheck GET
+    expect(newCalls[1]).toEqual([`/api/documents/${DOCUMENT_ID}/podcast`, { method: 'POST' }]) // the escalation that actually recovers
+    expect(screen.getByTestId('podcast-audio')).toBeInTheDocument()
+  })
+
+  it('an escalation POST that harmlessly 409s (row still within its grace window server-side) resumes polling instead of getting stuck', async () => {
+    vi.useFakeTimers()
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, generatingPodcast()))
+    render(<PodcastSection documentId={DOCUMENT_ID} />)
+    await flush()
+
+    fetchMock.mockResolvedValue(jsonResponse(200, generatingPodcast()))
+    await flush(335_000)
+    const checkAgain = screen.getByRole('button', { name: 'Check status' })
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, generatingPodcast())) // recheck GET: still stuck
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(409, {
+        error: 'A podcast for this document is already being generated. Check back in a few minutes.',
+        podcast: generatingPodcast().podcast,
+      })
+    )
+    fireEvent.click(checkAgain)
+    await flush()
+    expect(screen.getByText('Still generating — checking for updates every few seconds.')).toBeInTheDocument()
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, readyPodcast()))
+    await flush(4000)
     expect(screen.getByTestId('podcast-audio')).toBeInTheDocument()
   })
 })
@@ -357,10 +438,33 @@ describe('PodcastSection — unmount safety', () => {
     // Resolving after unmount must not touch state on an unmounted component
     // — mountedRef guards every setState in podcast-section.tsx, so this
     // should neither throw nor warn ("state update on an unmounted
-    // component"). Advancing fake timers again would also confirm the
-    // interval was actually cleared on unmount, but act()'s own React
-    // warnings are the more direct signal here.
+    // component").
     pending.resolve(jsonResponse(200, readyPodcast()))
     await flush()
+  })
+
+  // Independent review finding (non-blocking): the test above only proves a
+  // stray resolved promise doesn't touch state after unmount — it would
+  // still pass even if the interval itself leaked, since nothing advances
+  // fake time past the unmount. This test proves the actual interval
+  // cleanup: stopPolling() runs in the mount effect's return, so no further
+  // fetch calls should ever happen once unmounted, no matter how far time is
+  // advanced afterward.
+  it('clears the polling interval on unmount — no further fetch calls fire afterward', async () => {
+    vi.useFakeTimers()
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, generatingPodcast())) // mount check
+    const { unmount } = render(<PodcastSection documentId={DOCUMENT_ID} />)
+    await flush()
+    expect(screen.getByText(/Still generating/)).toBeInTheDocument()
+
+    fetchMock.mockResolvedValue(jsonResponse(200, generatingPodcast())) // would-be poll ticks, if any leaked
+    const callsBeforeUnmount = fetchMock.mock.calls.length
+    unmount()
+
+    // Several poll intervals' worth of fake time, well past a single tick —
+    // if the interval were still alive this would fire multiple more fetch
+    // calls.
+    await flush(4000 * 5)
+    expect(fetchMock.mock.calls.length).toBe(callsBeforeUnmount)
   })
 })
