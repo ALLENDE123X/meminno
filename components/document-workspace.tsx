@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Flashcard } from '@/components/flashcard'
+import { PodcastSection } from '@/components/podcast-section'
 import { parseNotesContent } from '@/lib/notesFormat'
 
 type NoteState = { id: string; content: string } | null
@@ -28,6 +29,13 @@ type Stage = 'idle' | 'loading' | 'error'
 // yet, and continuing to show the previous note's flashcards/quiz next to
 // brand-new notes would be actively misleading about what those cards were
 // generated from.
+//
+// MEM-016: the fourth generation surface, <PodcastSection>, is rendered at
+// the bottom rather than inlined here — its request/response shape (a
+// single request that can itself run for minutes, 409-on-in-flight, resumed
+// via polling on page load) is different enough from this file's simple
+// one-shot POST-then-setState flows that it owns its own state machine and
+// tests. See components/podcast-section.tsx's header comment.
 export function DocumentWorkspace({
   documentId,
   initialNote,
@@ -208,6 +216,12 @@ export function DocumentWorkspace({
           ) : null}
         </section>
       ) : null}
+
+      {/* MEM-016: unlike flashcards/quizzes, not gated behind `note` — MEM-015's
+          route generates straight from the document's raw text, the same
+          source generateNotes() above reads, so a podcast never needs notes
+          to exist first. */}
+      <PodcastSection documentId={documentId} />
     </div>
   )
 }
