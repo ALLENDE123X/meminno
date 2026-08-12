@@ -189,10 +189,11 @@ Multiple tickets can be worked simultaneously using git worktrees (one per ticke
 
 ## Ticket / PR protocol
 
-- One ticket = one feature branch = one PR. **Hard limits: ≤300 lines, ≤5 files.** Split bigger ones.
-- **Dev-agent tiering:** default to a sonnet dev agent for routine, well-scoped tickets. Use an opus dev agent when the work is genuinely difficult — tricky debugging, precision-sensitive work, or real architectural judgment calls. Judgment call on difficulty per ticket, not a fixed rule by ticket type.
+- One ticket = one feature branch = one PR. **Hard limits: ≤300 lines, ≤5 files.** Split bigger ones (in practice, every real podcast-feature ticket exceeded this for justified reasons — flag the overage explicitly in the PR body rather than quietly ignoring the limit).
+- **Dev-agent tiering (revised 2026-08-12, Pranav's explicit standing instruction — supersedes the original sonnet-default version below):** use an **opus** dev agent for all implementation work, regardless of ticket difficulty. Use a **sonnet** agent for code-review work (the merge-evaluation pass described below). This is a deliberate flip from the original convention (which defaulted to sonnet for dev and always used opus for review) — apply it to all future ticket dispatches in this repo.
+  - ~~Original convention, superseded: default to a sonnet dev agent for routine, well-scoped tickets, opus only when genuinely difficult.~~
 - CI green **and** Vercel deploy "Ready" before the PR is considered mergeable.
-- **Merge-readiness review:** once CI + deploy are green, run a separate **opus merge-evaluation agent** — a different agent instance than whichever did the dev work — against the full diff and the review gates below. It must actually check the diff against each gate, not just confirm CI status.
+- **Merge-readiness review:** once CI + deploy are green, run a separate **sonnet merge-evaluation agent** (see tiering note above) — a different agent instance than whichever did the dev work — against the full diff and the review gates below. It must actually check the diff against each gate, not just confirm CI status.
 - **Auto-merge:** if the opus review agent explicitly approves the PR as merge-ready, merge it without asking Pranav first — see HARD STOP 1. If it flags a real blocking issue, do not merge — fix and re-review, or escalate to Pranav if it's a product/business decision rather than a code fix.
 - Review gates the opus agent checks against the diff: security (including RLS on any new table) · tests · legal/privacy (data collection — this app stores users' actual coursework, treat it accordingly; OAuth/scope if Supabase Auth providers are added; billing changes; AI disclosure) · two-layer rate limiting present on any new AI-generation endpoint (HARD STOP 6) · OpenAI cost exposure on any new generation path.
 
