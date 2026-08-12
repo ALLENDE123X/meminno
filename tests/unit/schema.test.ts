@@ -8,6 +8,7 @@ import {
   flashcards,
   quizzes,
   quizAttempts,
+  podcasts,
   healthChecks,
 } from '@/lib/db/schema'
 
@@ -17,7 +18,7 @@ import {
 // This file's job is narrower but cheaper: catch an accidentally-missing
 // `.enableRLS()` or `pgPolicy(...)` before it ever reaches a real database.
 describe('schema RLS wiring (lib/db/schema.ts)', () => {
-  const userTables = { users, documents, notes, flashcards, quizzes, quizAttempts }
+  const userTables = { users, documents, notes, flashcards, quizzes, quizAttempts, podcasts }
   const dialect = new PgDialect()
   const render = (expr: SQL | undefined) => dialect.sqlToQuery(expr!).sql
 
@@ -72,6 +73,12 @@ describe('schema RLS wiring (lib/db/schema.ts)', () => {
       [flashcards, 'notes', 'note_id'],
       [quizzes, 'notes', 'note_id'],
       [quizAttempts, 'quizzes', 'quiz_id'],
+      // MEM-012: added AFTER issue #23's fix, so it was built with the
+      // parent-ownership clause rather than retrofitted with one. Pinned
+      // here for the same reason as the other four - a future edit that
+      // "simplifies" it back to a flat user_id check must fail before it
+      // ever reaches a database.
+      [podcasts, 'documents', 'document_id'],
     ]
     for (const [table, parentTable, parentColumn] of parentChecks) {
       const policy = getTableConfig(table).policies[0]
@@ -87,8 +94,8 @@ describe('schema RLS wiring (lib/db/schema.ts)', () => {
     }
   })
 
-  it('notes/flashcards/quizzes/quiz_attempts denormalize user_id (see schema.ts header comment on why)', () => {
-    for (const table of [notes, flashcards, quizzes, quizAttempts]) {
+  it('notes/flashcards/quizzes/quiz_attempts/podcasts denormalize user_id (see schema.ts header comment on why)', () => {
+    for (const table of [notes, flashcards, quizzes, quizAttempts, podcasts]) {
       const config = getTableConfig(table)
       expect(config.columns.some((c) => c.name === 'user_id' && c.notNull)).toBe(true)
     }
@@ -101,12 +108,29 @@ describe('schema RLS wiring (lib/db/schema.ts)', () => {
   })
 
   it('cascade-deletes every user_id/parent-id foreign key, so deleting a user cleans up everything they own', () => {
-    for (const table of [documents, notes, flashcards, quizzes, quizAttempts]) {
+    for (const table of [documents, notes, flashcards, quizzes, quizAttempts, podcasts]) {
       const config = getTableConfig(table)
       expect(config.foreignKeys.length).toBeGreaterThan(0)
       for (const fk of config.foreignKeys) {
         expect(fk.onDelete).toBe('cascade')
       }
     }
+  })
+
+  it('podcasts starts pending with every generation-output column nullable (MEM-012, issue #47)', () => {
+    // The lifecycle contract this table exists to hold: a row is created
+    // when generation is queued, so it must be insertable with nothing but
+    // its two FKs. storage_path/duration_seconds are populated on 'ready',
+    // error_message on 'failed' - all three therefore nullable, and none of
+    // them may quietly become NOT NULL without breaking the queue path.
+    const columns = getTableConfig(podcasts).columns
+    const column = (name: string) => columns.find((c) => c.name === name)
+    expect(column('status')?.notNull).toBe(true)
+    expect(column('status')?.default).toBe('pending')
+    for (const nullable of ['storage_path', 'duration_seconds', 'error_message']) {
+      expect(column(nullable)?.notNull).toBe(false)
+    }
+    expect(column('document_id')?.notNull).toBe(true)
+    expect(column('user_id')?.notNull).toBe(true)
   })
 })

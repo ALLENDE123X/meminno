@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import postgres from 'postgres'
 import { randomUUID } from 'node:crypto'
+import { eq } from 'drizzle-orm'
+// MEM-012's suite at the bottom of this file exercises the app's real entry
+// point (withUserContext + the drizzle table object) on the new `podcasts`
+// table, not only this file's hand-rolled equivalent - see that describe
+// block's comment for why.
+import { withUserContext } from '@/lib/db'
+import { podcasts } from '@/lib/db/schema'
 
 // Proves the RLS policies in lib/db/schema.ts genuinely isolate users - not
 // as a mocked assertion, but by connecting as the SAME role the running app
@@ -289,5 +296,217 @@ describe.skipIf(!DATABASE_URL)('child-table RLS withCheck rejects parent-ownersh
       tx`insert into quiz_attempts (id, quiz_id, user_id, score, answers) values (gen_random_uuid(), ${quizId}, ${userA}, 100, '[]'::jsonb) returning id`
     )
     expect(ownAttempt?.id).toBeTruthy()
+  })
+})
+
+// MEM-012 (issue #47): the `podcasts` table. Proves all five pieces of
+// CLAUDE.md's new-table RLS convention actually hold on the new table, not
+// just that the migration ran - the same standard the two suites above hold
+// the original six tables to.
+//
+// One deliberate difference from those suites: the happy-path test here goes
+// through `lib/db/index.ts`'s REAL `withUserContext()` + the real drizzle
+// `podcasts` table object, not this file's hand-rolled `asUser` helper. The
+// helper is a faithful copy of what withUserContext does, but a copy - and
+// `podcasts` is the first table added since that helper was written, so it is
+// worth proving once that the actual application entry point (the thing every
+// future podcast route will call) resolves this table's policy correctly.
+// The forgery/isolation tests below stay on the raw connection, where a
+// rejected INSERT surfaces the underlying Postgres error verbatim.
+describe.skipIf(!DATABASE_URL)('podcasts RLS (MEM-012, issue #47)', () => {
+  let sql: postgres.Sql
+  const userA = randomUUID()
+  const userB = randomUUID()
+  let documentA: string
+  let documentB: string
+  let podcastA: string
+
+  beforeAll(async () => {
+    sql = postgres(DATABASE_URL!, { prepare: false, max: 1 })
+
+    await asUser(userA, (tx) => tx`insert into users (id, email) values (${userA}, 'a-podcast@example.com')`)
+    await asUser(userB, (tx) => tx`insert into users (id, email) values (${userB}, 'b-podcast@example.com')`)
+
+    const [docA] = await asUser(userA, (tx) =>
+      tx`insert into documents (id, user_id, title, source_type) values (gen_random_uuid(), ${userA}, 'A podcast source doc', 'text') returning id`
+    )
+    documentA = docA.id as string
+
+    const [docB] = await asUser(userB, (tx) =>
+      tx`insert into documents (id, user_id, title, source_type) values (gen_random_uuid(), ${userB}, 'B own doc', 'text') returning id`
+    )
+    documentB = docB.id as string
+  })
+
+  afterAll(async () => {
+    if (!sql) return
+    for (const id of [userA, userB]) {
+      await asUser(id, (tx) => tx`delete from users where id = ${id}`).catch(() => {})
+    }
+    await sql.end()
+  })
+
+  async function asUser<T>(userId: string, fn: (tx: postgres.TransactionSql) => Promise<T>): Promise<T> {
+    const result = await sql.begin(async (tx) => {
+      await tx`select set_config('app.current_user_id', ${userId}, true)`
+      return fn(tx)
+    })
+    return result as T
+  }
+
+  it('has all five pieces of the new-table convention applied on the live schema', async () => {
+    const [table] = await sql`
+      select c.relrowsecurity, c.relforcerowsecurity, pg_get_userbyid(c.relowner) as owner
+      from pg_class c join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public' and c.relname = 'podcasts'
+    `
+    // (1) ENABLE and (5) FORCE - without FORCE the owner would be exempt
+    // from its own policy, which is exactly what MEM-002-fix closed.
+    expect(table.relrowsecurity).toBe(true)
+    expect(table.relforcerowsecurity).toBe(true)
+    // ...and the connected runtime role is not that owner.
+    expect(table.owner).not.toBe((await sql`select current_user`)[0].current_user)
+
+    // (2) exactly one policy, FOR ALL, naming both real access paths and
+    // never the owner/migration role.
+    const policies = await sql`
+      select polname,
+             polcmd,
+             (select array_agg(pg_get_userbyid(r)) from unnest(polroles) r) as roles,
+             pg_get_expr(polwithcheck, polrelid) as with_check
+      from pg_policy where polrelid = 'public.podcasts'::regclass
+    `
+    expect(policies).toHaveLength(1)
+    expect(policies[0].polname).toBe('podcasts_own_rows')
+    expect(policies[0].polcmd).toBe('*')
+    expect([...(policies[0].roles as string[])].sort()).toEqual(['authenticated', 'meminno_rls'])
+    // The parent-ownership clause (issue #23's shape), present from day one
+    // on this table rather than added by a later tightening migration.
+    expect(policies[0].with_check).toMatch(/EXISTS/i)
+    expect(policies[0].with_check).toMatch(/documents/)
+
+    // (3) + (4) the two hand-written GRANTs drizzle-kit never emits. Without
+    // them every query fails with a blanket "permission denied for table",
+    // one layer below where RLS is even evaluated. `anon` deliberately gets
+    // nothing.
+    const [privs] = await sql`
+      select has_table_privilege('authenticated', 'public.podcasts', 'SELECT') as auth_select,
+             has_table_privilege('meminno_rls', 'public.podcasts', 'SELECT') as rls_select,
+             has_table_privilege('anon', 'public.podcasts', 'SELECT') as anon_select
+    `
+    expect(privs.auth_select).toBe(true)
+    expect(privs.rls_select).toBe(true)
+    expect(privs.anon_select).toBe(false)
+  })
+
+  it('an owner can insert and read back their own podcast row through the real withUserContext()', async () => {
+    const inserted = await withUserContext(userA, (tx) =>
+      tx.insert(podcasts).values({ documentId: documentA, userId: userA }).returning()
+    )
+    expect(inserted).toHaveLength(1)
+    podcastA = inserted[0].id
+    // Column defaults/nullability behave as the feature expects: a freshly
+    // queued podcast is 'pending' with nothing populated yet.
+    expect(inserted[0].status).toBe('pending')
+    expect(inserted[0].storagePath).toBeNull()
+    expect(inserted[0].durationSeconds).toBeNull()
+    expect(inserted[0].errorMessage).toBeNull()
+
+    const readBack = await withUserContext(userA, (tx) =>
+      tx.select().from(podcasts).where(eq(podcasts.id, podcastA))
+    )
+    expect(readBack).toHaveLength(1)
+    expect(readBack[0].documentId).toBe(documentA)
+  })
+
+  it('an owner can update their own podcast row through the whole generation lifecycle', async () => {
+    const [ready] = await asUser(userA, (tx) =>
+      tx`update podcasts set status = 'ready', storage_path = 'podcasts/a.mp3', duration_seconds = 480
+         where id = ${podcastA} returning status, storage_path, duration_seconds`
+    )
+    expect(ready.status).toBe('ready')
+    expect(ready.storage_path).toBe('podcasts/a.mp3')
+    expect(ready.duration_seconds).toBe(480)
+
+    const [failed] = await asUser(userA, (tx) =>
+      tx`update podcasts set status = 'failed', error_message = 'not_configured'
+         where id = ${podcastA} returning status, error_message`
+    )
+    expect(failed.status).toBe('failed')
+    expect(failed.error_message).toBe('not_configured')
+  })
+
+  it('another user cannot see, update, or delete that podcast row', async () => {
+    expect(await asUser(userB, (tx) => tx`select * from podcasts where id = ${podcastA}`)).toHaveLength(0)
+    expect(
+      await asUser(userB, (tx) => tx`update podcasts set status = 'ready' where id = ${podcastA} returning *`)
+    ).toHaveLength(0)
+    expect(
+      await asUser(userB, (tx) => tx`delete from podcasts where id = ${podcastA} returning *`)
+    ).toHaveLength(0)
+
+    // ...and it is genuinely untouched afterwards.
+    const stillThere = await asUser(userA, (tx) => tx`select status from podcasts where id = ${podcastA}`)
+    expect(stillThere).toHaveLength(1)
+    expect(stillThere[0].status).toBe('failed')
+  })
+
+  it('a session with no identity set sees no podcast rows at all (default deny)', async () => {
+    expect(await sql`select * from podcasts where id = ${podcastA}`).toHaveLength(0)
+  })
+
+  it('user B cannot forge a podcast against user A\'s document (parent-ownership withCheck)', async () => {
+    // user_id = B (so the flat half of withCheck passes) but document_id
+    // points at user A's document. The FK resolves fine - Postgres checks FK
+    // referential integrity with RLS bypassed by design - so only the EXISTS
+    // clause stops this.
+    await expect(
+      asUser(userB, (tx) =>
+        tx`insert into podcasts (id, document_id, user_id) values (gen_random_uuid(), ${documentA}, ${userB})`
+      )
+    ).rejects.toThrow(/row-level security/i)
+
+    // The mirror-image forgery: user_id = A while pointing at B's own
+    // document, i.e. claiming a row on someone else's behalf.
+    await expect(
+      asUser(userB, (tx) =>
+        tx`insert into podcasts (id, document_id, user_id) values (gen_random_uuid(), ${documentB}, ${userA})`
+      )
+    ).rejects.toThrow(/row-level security/i)
+
+    // ...while B's own legitimate insert against B's own document succeeds,
+    // proving the tightening didn't just break the table for everyone.
+    const [ownPodcast] = await asUser(userB, (tx) =>
+      tx`insert into podcasts (id, document_id, user_id) values (gen_random_uuid(), ${documentB}, ${userB}) returning id`
+    )
+    expect(ownPodcast?.id).toBeTruthy()
+  })
+
+  it('user B cannot UPDATE their own podcast row to repoint it at user A\'s document', async () => {
+    // withCheck applies to the post-update row too, so a repoint is the same
+    // forgery as an INSERT and must fail the same way.
+    await expect(
+      asUser(userB, (tx) =>
+        tx`update podcasts set document_id = ${documentA} where user_id = ${userB}`
+      )
+    ).rejects.toThrow(/row-level security/i)
+  })
+
+  it.skipIf(!MIGRATION_DATABASE_URL)('the table-owning migration role cannot read podcast rows either', async () => {
+    const owner = postgres(MIGRATION_DATABASE_URL!, { prepare: false, max: 1 })
+    try {
+      const [{ rolsuper, rolbypassrls }] = await owner`
+        select r.rolsuper, r.rolbypassrls from pg_roles r where r.rolname = current_user
+      `
+      // A superuser or a BYPASSRLS role would make the assertion below
+      // meaningless rather than passing for the right reason.
+      expect(rolsuper).toBe(false)
+      expect(rolbypassrls).toBe(false)
+
+      expect(await owner`select * from podcasts where id = ${podcastA}`).toHaveLength(0)
+      expect(await owner`select * from podcasts where user_id in (${userA}, ${userB})`).toHaveLength(0)
+    } finally {
+      await owner.end()
+    }
   })
 })
