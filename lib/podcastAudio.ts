@@ -100,12 +100,24 @@ const REQUIRED_SPEAKER_COUNT = 2
 // Sized from a real measurement, not a guess. A genuine 831-word / 5,220-char
 // two-speaker script synthesized to 4.63 minutes of audio in 144 seconds of
 // wall clock — call it ~28ms of latency per character. 7,000 characters is
-// therefore roughly a 6.2-minute podcast taking ~195s, which lands inside
-// MEM-013's stated 5-7 minute target while staying comfortably under
-// GEMINI_TIMEOUT_MS below. It is nowhere near the model's own 8k-token input
-// ceiling (5,220 chars measured as 1,207 input tokens), so latency and cost,
-// not context, are what this bound exists for.
-const MAX_SCRIPT_CHARS = 7_000
+// therefore roughly a 6.2-minute podcast taking ~195s, staying comfortably
+// under GEMINI_TIMEOUT_MS below. It is nowhere near the model's own 8k-token
+// input ceiling (5,220 chars measured as 1,207 input tokens), so latency and
+// cost, not context, are what this bound exists for.
+//
+// This same 831-word/5,220-char sample (~6.28 chars/word for real spoken
+// dialogue, including this module's own "A: "/"B: " speaker-prefix and
+// newline formatting overhead) is also the real-world evidence
+// lib/podcastScript.ts's MAX_TOTAL_WORDS is now sized against (issue #63,
+// 2026-08-11 post-ship fix) — see that constant's comment for the full
+// derivation. Exported (rather than kept module-private) specifically so
+// tests/unit/podcastScript.test.ts can assert that invariant directly
+// against this real constant instead of a hardcoded literal that could
+// silently drift. Do NOT raise this value to "fix" a script-too-long
+// rejection instead of lowering the word ceiling upstream — it is sized
+// against the hard Vercel maxDuration ceiling documented below, not against
+// script length.
+export const MAX_SCRIPT_CHARS = 7_000
 
 // 240s per attempt. Unusually long for this codebase (lib/audioTranscription.ts
 // uses 60s, the text-generation modules 20s) because TTS latency scales with
