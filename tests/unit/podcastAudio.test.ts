@@ -24,6 +24,7 @@ import {
   parsePcmMimeType,
   wrapPcmInWavContainer,
   buildMultiSpeakerPrompt,
+  stripStageDirections,
   PODCAST_VOICE_A,
   PODCAST_VOICE_B,
 } from '@/lib/podcastAudio'
@@ -136,6 +137,23 @@ describe('generatePodcastAudio', () => {
     expect(PODCAST_VOICE_A).not.toBe(PODCAST_VOICE_B)
   })
 
+  it('never sends a bracketed stage direction to the model, and drops turns made only of one', async () => {
+    process.env.GEMINI_API_KEY = 'gemini-test'
+    mockGenerateContent.mockResolvedValue(audioResponse(48_000))
+
+    await generatePodcastAudio([
+      { speaker: 'Alex', text: '[laughs] So, mitochondria.' },
+      { speaker: 'Sam', text: '[both laugh]' },
+      { speaker: 'Sam', text: 'The powerhouse line, yes.' },
+    ])
+
+    const sentText = mockGenerateContent.mock.calls[0][0].contents[0].parts[0].text
+    expect(sentText).not.toContain('[')
+    expect(sentText).not.toContain('laughs')
+    // The direction-only turn produced no bare "Sam:" line of its own.
+    expect(sentText.split('\n')).toHaveLength(3) // instruction + two real turns
+  })
+
   it('pins the timeout and the no-retry budget, since the SDK default is five attempts', async () => {
     process.env.GEMINI_API_KEY = 'gemini-test'
     mockGenerateContent.mockResolvedValue(audioResponse(48_000))
@@ -237,6 +255,19 @@ describe('buildMultiSpeakerPrompt', () => {
     expect(prompt).toContain('Sam: The powerhouse of the cell, but there is more to it.')
   })
 
+  it('strips bracketed stage directions before they reach the model', () => {
+    const prompt = buildMultiSpeakerPrompt(
+      [
+        { speaker: 'Alex', text: '[laughs] Right, so what is it? [pause]' },
+        { speaker: 'Sam', text: 'The powerhouse line.' },
+      ],
+      ['Alex', 'Sam']
+    )
+
+    expect(prompt).not.toContain('[')
+    expect(prompt).toContain('Alex: Right, so what is it?')
+  })
+
   it('collapses whitespace so a newline inside a turn cannot fake a speaker change', () => {
     const prompt = buildMultiSpeakerPrompt(
       [
@@ -247,5 +278,35 @@ describe('buildMultiSpeakerPrompt', () => {
     )
 
     expect(prompt.split('\n')).toHaveLength(3) // instruction + exactly two turns
+  })
+})
+
+describe('stripStageDirections', () => {
+  // MEM-013 is prompted not to emit these and did not in its reviewer's real
+  // runs, but that is a prompt instruction rather than a guarantee, and this
+  // model has no expressive-tag feature - a stray "[laughs]" would simply be
+  // read aloud in a shipped podcast. Enforced here, at the last point before
+  // synthesis, so it holds whatever produced the script.
+  it('removes bracketed directions anywhere in the line', () => {
+    expect(stripStageDirections('[laughs] Sure. [beat] Where were we?')).toBe('Sure. Where were we?')
+  })
+
+  it('leaves ordinary dialogue untouched', () => {
+    expect(stripStageDirections('The mitochondria is the powerhouse of the cell.')).toBe(
+      'The mitochondria is the powerhouse of the cell.'
+    )
+  })
+
+  it('reduces a turn that is nothing but a direction to an empty string', () => {
+    expect(stripStageDirections('[both laugh]')).toBe('')
+  })
+
+  it('leaves an unclosed bracket alone rather than eating the rest of the line', () => {
+    expect(stripStageDirections('Wait [ what about ATP?')).toBe('Wait [ what about ATP?')
+  })
+
+  it('is idempotent', () => {
+    const once = stripStageDirections('[sighs]  So,   ATP.')
+    expect(stripStageDirections(once)).toBe(once)
   })
 })

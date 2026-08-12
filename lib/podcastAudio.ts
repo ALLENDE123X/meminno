@@ -194,16 +194,39 @@ export function wrapPcmInWavContainer(pcm: Buffer, format: PcmFormat): Buffer {
 }
 
 /**
+ * Cleans one turn's text before it is handed to the TTS API.
+ *
+ * Two jobs:
+ *
+ * 1. **Strip bracketed stage directions** ("[laughs]", "[pause]", "[upbeat]").
+ *    MEM-013's generator is prompted not to emit these and, per its own
+ *    review, did not in real runs — but that is a prompt instruction, not a
+ *    guarantee, and the failure mode here is loud and shipped: this model has
+ *    no expressive-tag feature, so a stray "[laughs]" is simply READ ALOUD in
+ *    a finished podcast. Cheap insurance at the last point before synthesis,
+ *    where it holds regardless of which upstream produced the script.
+ *    (An unclosed `[` with no matching bracket is left alone deliberately —
+ *    eating everything after a stray bracket would destroy real dialogue.)
+ * 2. **Collapse whitespace**, so a newline inside one turn cannot masquerade
+ *    as the start of another speaker's line in the transcript below.
+ *
+ * Idempotent: running it twice changes nothing.
+ */
+export function stripStageDirections(text: string): string {
+  return text
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
  * Renders the script into the single text input Gemini's multi-speaker mode
  * expects: a `Speaker: line` transcript, prefixed with an instruction naming
  * both speakers. The speaker labels here MUST match the `speaker` values in
  * speakerVoiceConfigs, which is why both are derived from the same list.
- *
- * Each turn's text is whitespace-collapsed so a stray newline inside one
- * turn can't masquerade as the start of another speaker's line.
  */
 export function buildMultiSpeakerPrompt(turns: PodcastScriptTurn[], speakers: string[]): string {
-  const transcript = turns.map((turn) => `${turn.speaker}: ${turn.text.replace(/\s+/g, ' ').trim()}`).join('\n')
+  const transcript = turns.map((turn) => `${turn.speaker}: ${stripStageDirections(turn.text)}`).join('\n')
   return `TTS the following conversation between ${speakers[0]} and ${speakers[1]}:\n${transcript}`
 }
 
@@ -217,7 +240,12 @@ function distinctSpeakers(turns: PodcastScriptTurn[]): string[] {
  * Never throws.
  */
 export async function generatePodcastAudio(turns: PodcastScriptTurn[]): Promise<GeneratePodcastAudioResult> {
-  const usableTurns = turns.filter((turn) => turn.text.trim().length > 0)
+  // Sanitize first, then drop anything left empty — a turn that was nothing
+  // but a stage direction ("[both laugh]") has no speech in it and should not
+  // reach the model as a bare "Alex:" line.
+  const usableTurns = turns
+    .map((turn) => ({ speaker: turn.speaker, text: stripStageDirections(turn.text) }))
+    .filter((turn) => turn.text.length > 0)
   if (usableTurns.length === 0) {
     return { success: false, reason: 'empty_input', message: 'This podcast script is empty.' }
   }
