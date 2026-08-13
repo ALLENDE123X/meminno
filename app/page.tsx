@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { LandingPodcastPreview } from "@/components/landing-podcast-preview";
 
 const FEATURES = [
   {
@@ -23,6 +24,27 @@ const FEATURES = [
   },
 ];
 
+// MEM-018 (issue #88): the podcast feature's own selling points. Kept as a
+// const array alongside FEATURES/STEPS rather than inlined in the JSX, so
+// the section below reads the same way every other section on this page does.
+const PODCAST_POINTS = [
+  {
+    title: "Study while you're doing something else",
+    description:
+      "Put it on for the walk to class, the gym, the bus, the dishes. Time you were never going to spend reading anyway becomes review time.",
+  },
+  {
+    title: "Dense material, explained out loud",
+    description:
+      "One host walks through your material, the other asks the questions you'd actually ask. Hearing a hard idea get unpacked in conversation sticks better than re-reading the same paragraph.",
+  },
+  {
+    title: "Made from your material, not a generic episode",
+    description:
+      "It's generated from the exact PDF, notes, or lecture recording you uploaded, so it covers your class and your professor's emphasis, not somebody else's syllabus.",
+  },
+];
+
 const STEPS = [
   {
     step: "1",
@@ -31,8 +53,8 @@ const STEPS = [
   },
   {
     step: "2",
-    title: "Get notes, flashcards, and a quiz",
-    description: "Meminno's AI reads your material and generates all three, organized and ready to study.",
+    title: "Get notes, flashcards, a quiz, and a podcast",
+    description: "Meminno's AI reads your material and generates all four, organized and ready to study.",
   },
   {
     step: "3",
@@ -100,6 +122,41 @@ export default function Home() {
               </CardHeader>
             </Card>
           ))}
+        </div>
+      </section>
+
+      {/* Podcast (MEM-018, issue #88) — deliberately its own section rather
+          than a fifth card in the FEATURES grid above: it's the newest and
+          most demo-able thing the product does, and a grid cell can't show
+          what an Audio Overview actually sounds like. Placed here, between
+          the features overview and "How it works", so the page still reads
+          overview → depth → process → price. */}
+      <section className="mx-auto w-full max-w-5xl px-6 py-16">
+        <div className="flex flex-col items-center text-center">
+          <span className="rounded-full bg-black px-3 py-1 text-xs font-medium text-white">New</span>
+          <h2 className="mt-4 text-2xl font-semibold tracking-tight sm:text-3xl">
+            Turn any reading into a podcast you can listen to
+          </h2>
+          <p className="mt-3 max-w-2xl text-zinc-600">
+            Meminno turns your uploaded coursework into an AI-generated conversation between two hosts, who talk
+            through your material the way a good study partner would. About five minutes, ready to play, made from
+            whatever you just uploaded.
+          </p>
+        </div>
+
+        <div className="mt-10 grid items-center gap-10 lg:grid-cols-2">
+          <LandingPodcastPreview />
+          <div className="flex flex-col gap-6">
+            {PODCAST_POINTS.map((point) => (
+              <div key={point.title} className="flex flex-col gap-1.5">
+                <h3 className="font-semibold">{point.title}</h3>
+                <p className="text-sm text-zinc-600">{point.description}</p>
+              </div>
+            ))}
+            <Link href="/sign-in" className={buttonVariants({ className: "self-start" })}>
+              Make your first podcast
+            </Link>
+          </div>
         </div>
       </section>
 
