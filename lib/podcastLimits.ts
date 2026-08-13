@@ -2,9 +2,10 @@
 // mandatory per CLAUDE.md HARD STOP 6, and the first time that hard stop
 // covers a vendor other than OpenAI: this is the only path in the codebase
 // that bills Google. Same shape as lib/notesLimits.ts / lib/quizLimits.ts /
-// lib/recordingLimits.ts (a burst check, then a per-user daily claim, then a
+// lib/recordingLimits.ts (a burst check, then a per-user claim, then a
 // platform-wide daily claim, each with its own operation-name string), with
-// deliberately different NUMBERS — see the reasoning on each constant.
+// deliberately different NUMBERS — and, since issue #87, a different WINDOW on
+// the free tier — see the reasoning on each constant.
 //
 // Ordering convention, unchanged from MEM-004's merge-review lesson: the
 // route calls checkPodcastBurstLimit() FIRST (cheap, request-independent),
@@ -18,8 +19,13 @@
 // claim covers the whole pipeline, since that is one user-visible action and
 // double-charging the quota for it would just make the cap mean half what it
 // says. Claim once, before the script call.
+//
+// NOTE (issue #87, 2026-08-12): the FREE tier is now a WEEKLY cap, not a daily
+// one — 1 podcast/week. Paid and platform caps stay daily. This is a product
+// decision (create real upgrade pressure), not a cost one; the cost reasoning
+// below is unchanged and still explains why free was never at 5/day.
 import { limitRequest } from './ratelimit'
-import { claimDailyBudget } from './aiBudget'
+import { claimDailyBudget, claimWeeklyBudget } from './aiBudget'
 
 // ---------------------------------------------------------------------------
 // The measurement these caps are built on
@@ -35,13 +41,24 @@ import { claimDailyBudget } from './aiBudget'
 // The unit being capped is the same word ("generation"); the dollars behind
 // it are not remotely the same, and the caps have to track the dollars.
 
-// Free plan: 2/day, NOT the 5/day every text-generation feature uses. At
-// ~$0.10 a call, 5/day free would be $0.50/day of real vendor spend per
-// signed-up free account, which is not a sustainable free tier for the single
-// most expensive thing this product does. Two is still enough to genuinely
-// experience the feature — generate one, listen, generate another for a
-// different document — which is what a free tier is for.
-export const FREE_TIER_DAILY_PODCAST_CAP = 2
+// Free plan: 1 per WEEK — the only cap in this codebase that is not daily.
+//
+// Why weekly, and why 1 (issue #87): this is a deliberate conversion lever,
+// decided on the 2026-08-12 call, not a cost adjustment. The free tier at
+// 2/day was generous enough that a student could keep using it indefinitely
+// and never feel a reason to pay. One podcast a week is still enough to fully
+// experience the feature end to end — which is the point of a free tier and
+// the thing that makes someone want more — while making "I want another one"
+// a real, frequent moment that only upgrading resolves.
+//
+// It also happens to cut the worst-case free-tier vendor spend from ~$0.20/day
+// to ~$0.10/week per account (~14x), on the single most expensive thing this
+// product does. That is a side effect, not the reason.
+//
+// The window resets at the ISO week boundary (Monday 00:00 UTC) via
+// lib/aiBudget.ts's claimWeeklyBudget — a real weekly reset, not a
+// 7-day-from-first-use rolling window and not a daily key with a longer TTL.
+export const FREE_TIER_WEEKLY_PODCAST_CAP = 1
 
 // Paid plans: 5/day, derived from unit economics rather than picked as a
 // round number. The cheaper subscription is $17.99/month, i.e. ~$0.60/day of
@@ -89,22 +106,35 @@ export async function checkPodcastBurstLimit(userId: string): Promise<PodcastLim
   return { ok: true }
 }
 
+// The free cap is 1, so its message has to read "1 podcast per week", not
+// "1 podcasts per week". Kept derived from the constant rather than hardcoded
+// so the number and the sentence can never drift apart if it is ever raised.
+const freeCapPhrase = `${FREE_TIER_WEEKLY_PODCAST_CAP} podcast${FREE_TIER_WEEKLY_PODCAST_CAP === 1 ? '' : 's'}`
+
 /**
- * Layers 2-3: the per-user daily cap, then the platform-wide daily ceiling.
+ * Layers 2-3: the per-user cap, then the platform-wide daily ceiling.
  * Own Redis namespace (`podcast-generation`), never shared with the
  * notes/flashcards/quiz/recording counters.
+ *
+ * The per-user window is plan-dependent (issue #87): free users are capped
+ * WEEKLY, paid users daily. Both use the same operation name — the counters
+ * still cannot collide, because lib/aiBudget.ts suffixes the key with the
+ * window (`...:2026-08-12` vs `...:2026-W33`). A user who upgrades or
+ * downgrades mid-window therefore starts against a fresh counter on the other
+ * cadence, which is the correct and generous-to-the-user behavior.
  */
 export async function claimPodcastBudget(userId: string, plan: string): Promise<PodcastLimitResult> {
-  const perUserCap = plan === 'free' ? FREE_TIER_DAILY_PODCAST_CAP : PAID_TIER_DAILY_PODCAST_CAP
-  const withinUserCap = await claimDailyBudget(`podcast-generation:user:${userId}`, perUserCap)
+  const isFree = plan === 'free'
+  const withinUserCap = isFree
+    ? await claimWeeklyBudget(`podcast-generation:user:${userId}`, FREE_TIER_WEEKLY_PODCAST_CAP)
+    : await claimDailyBudget(`podcast-generation:user:${userId}`, PAID_TIER_DAILY_PODCAST_CAP)
   if (!withinUserCap) {
     return {
       ok: false,
       status: 429,
-      reason:
-        plan === 'free'
-          ? `Free plan is limited to ${FREE_TIER_DAILY_PODCAST_CAP} podcasts per day. Upgrade for a higher daily limit.`
-          : `Daily podcast limit reached (${PAID_TIER_DAILY_PODCAST_CAP}/day). Contact support if you need more.`,
+      reason: isFree
+        ? `Free plan is limited to ${freeCapPhrase} per week. Upgrade for more.`
+        : `Daily podcast limit reached (${PAID_TIER_DAILY_PODCAST_CAP}/day). Contact support if you need more.`,
     }
   }
 

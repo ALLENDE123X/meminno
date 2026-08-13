@@ -245,7 +245,7 @@ describe('PodcastSection — generate-click flow', () => {
 
   it.each([
     [422, 'This document has no text to generate a podcast from'],
-    [429, 'Free plan is limited to 2 podcasts per day. Upgrade for a higher daily limit.'],
+    [429, 'Free plan is limited to 1 podcast per week. Upgrade for more.'],
     [502, "Couldn't turn this script into audio. Please try again in a moment."],
     [503, "AI podcast generation isn't available right now. Please try again in a moment."],
   ])('%i shows the exact honest error message from the route, not a generic one', async (status, message) => {
