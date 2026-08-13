@@ -185,12 +185,33 @@ describe('app/billing/actions', () => {
       )
     })
 
-    // MEM-039 (issue #89). STRIPE_PRICE_WEEKLY is unset in every environment
-    // until Pranav creates the real live Stripe Price, so this is the path a
-    // real "Subscribe" click on the new tier takes RIGHT NOW: refuse before
-    // reaching Stripe, with the generic user-facing message, rather than
-    // crashing or opening a checkout against a bad/absent price.
-    it('fails closed on weekly while STRIPE_PRICE_WEEKLY is unprovisioned, without calling Stripe', async () => {
+    // Regression guard for the Managed Payments outage: this account rejects
+    // `payment_method_types` outright, and while it was being sent EVERY
+    // checkout on EVERY plan failed with a redacted 500 — the Subscribe
+    // button had never once produced a session since MEM-011. See the long
+    // comment at the `stripe.checkout.sessions.create` call site in
+    // app/billing/actions.ts before re-adding it. Asserted as an absence, so
+    // it fails loudly if a future edit copies the parameter back in from
+    // Propinno's older account's still-valid version of this same function.
+    it('never sends payment_method_types — Managed Payments rejects it and breaks checkout on every plan', async () => {
+      getSessionUserMock.mockResolvedValue({ ok: true, userId: USER_ID, plan: 'free' })
+      selectResult = [{ plan: 'free', stripeCustomerId: null, stripeSubscriptionId: null }]
+
+      await createCheckoutSession('weekly')
+      await createCheckoutSession('monthly')
+
+      expect(checkoutSessionsCreateMock).toHaveBeenCalledTimes(2)
+      for (const [params] of checkoutSessionsCreateMock.mock.calls) {
+        expect(params).not.toHaveProperty('payment_method_types')
+      }
+    })
+
+    // MEM-039 (issue #89). Still the correct behaviour for any environment
+    // where the price id is genuinely absent (CI, Preview, a fresh local
+    // checkout), even though STRIPE_PRICE_WEEKLY is now set in Vercel
+    // Production: refuse before reaching Stripe rather than opening a
+    // checkout against a bad/absent price.
+    it('fails closed on weekly when STRIPE_PRICE_WEEKLY is unset, without calling Stripe', async () => {
       delete process.env.STRIPE_PRICE_WEEKLY
       getSessionUserMock.mockResolvedValue({ ok: true, userId: USER_ID, plan: 'free' })
       selectResult = [{ plan: 'free', stripeCustomerId: null, stripeSubscriptionId: null }]

@@ -109,8 +109,36 @@ export async function createCheckoutSession(plan: Plan): Promise<{ url: string |
     const protocol = process.env.NODE_ENV === 'development' ? 'http' : 'https'
     const origin = `${protocol}://${host}`
 
+    // NO `payment_method_types` HERE — DO NOT ADD IT BACK. Meminno's Stripe
+    // account (`acct_1U1pfKPsBW1UNw8C`) has **Managed Payments** enabled by
+    // default (it is on by default for accounts created after Stripe rolled
+    // it out; Propinno's older account predates that, which is why Propinno's
+    // otherwise-identical createCheckoutSession still passes `['card']` and
+    // still works). Managed Payments owns payment-method selection itself and
+    // rejects the parameter outright:
+    //
+    //   invalid_request_error: "Unsupported parameter: payment_method_types.
+    //   Managed Payments, which is enabled by default on your account,
+    //   handles this parameter for you."
+    //
+    // That rejection is total, not per-plan: it fired on EVERY plan, so
+    // `/billing`'s Subscribe button had never once produced a checkout
+    // session since MEM-011 shipped (confirmed against the live account —
+    // zero Checkout Session objects had ever existed on it). It was
+    // misdiagnosed as an unprovisioned `STRIPE_PRICE_WEEKLY` because the
+    // symptom (a redacted 500 from this server action) is identical for
+    // every failure in this function; the real differentiator was that
+    // Monthly, whose price id has been set in Vercel Production since
+    // MEM-011, failed in exactly the same way.
+    //
+    // Removing the parameter (rather than passing `managed_payments[enabled]
+    // = false`) is Stripe's own recommended resolution and is strictly
+    // better for conversion: Stripe then offers every method the account is
+    // eligible for, not just cards. Verified by a real live
+    // `checkout.sessions.create` with these exact parameters minus this one
+    // line, which returned an `open` session for $4.99 with a usable
+    // checkout URL (session expired again immediately afterwards).
     const checkoutSession = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
       line_items: [{ price: priceId, quantity: 1 }],
       mode: 'subscription',
       success_url: `${origin}/billing?success=true`,
