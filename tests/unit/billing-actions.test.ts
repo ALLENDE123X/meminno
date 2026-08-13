@@ -111,8 +111,8 @@ describe('app/billing/actions', () => {
     })
 
     it('reports a scheduled cancellation and its period end, live-read from Stripe (not stored in the DB)', async () => {
-      getSessionUserMock.mockResolvedValue({ ok: true, userId: USER_ID, plan: 'semester' })
-      selectResult = [{ plan: 'semester', stripeSubscriptionId: 'sub_1' }]
+      getSessionUserMock.mockResolvedValue({ ok: true, userId: USER_ID, plan: 'weekly' })
+      selectResult = [{ plan: 'weekly', stripeSubscriptionId: 'sub_1' }]
       subscriptionsRetrieveMock.mockResolvedValue({
         cancel_at_period_end: true,
         items: { data: [{ current_period_end: 1_800_000_000 }] },
@@ -121,7 +121,7 @@ describe('app/billing/actions', () => {
 
       const status = await getBillingStatus()
 
-      expect(status).toEqual({ plan: 'semester', hasSubscription: true, cancelAtPeriodEnd: true, currentPeriodEnd: 1_800_000_000 })
+      expect(status).toEqual({ plan: 'weekly', hasSubscription: true, cancelAtPeriodEnd: true, currentPeriodEnd: 1_800_000_000 })
     })
 
     it('fails closed to "not scheduled to cancel" when the Stripe read itself fails', async () => {
@@ -136,7 +136,7 @@ describe('app/billing/actions', () => {
   describe('createCheckoutSession', () => {
     beforeEach(() => {
       process.env.STRIPE_PRICE_MONTHLY = 'price_monthly'
-      process.env.STRIPE_PRICE_SEMESTER = 'price_semester'
+      process.env.STRIPE_PRICE_WEEKLY = 'price_weekly'
       checkoutSessionsCreateMock.mockResolvedValue({ url: 'https://checkout.stripe.com/test' } as never)
     })
 
@@ -171,18 +171,44 @@ describe('app/billing/actions', () => {
       getSessionUserMock.mockResolvedValue({ ok: true, userId: USER_ID, plan: 'free' })
       selectResult = [{ plan: 'free', stripeCustomerId: null, stripeSubscriptionId: null }]
 
-      const res = await createCheckoutSession('semester')
+      const res = await createCheckoutSession('weekly')
 
       expect(res.url).toBe('https://checkout.stripe.com/test')
       expect(checkoutSessionsCreateMock).toHaveBeenCalledWith(
         expect.objectContaining({
           mode: 'subscription',
-          line_items: [{ price: 'price_semester', quantity: 1 }],
+          line_items: [{ price: 'price_weekly', quantity: 1 }],
           client_reference_id: USER_ID,
-          metadata: { plan: 'semester' },
-          subscription_data: { metadata: { userId: USER_ID, plan: 'semester' } },
+          metadata: { plan: 'weekly' },
+          subscription_data: { metadata: { userId: USER_ID, plan: 'weekly' } },
         })
       )
+    })
+
+    // MEM-039 (issue #89). STRIPE_PRICE_WEEKLY is unset in every environment
+    // until Pranav creates the real live Stripe Price, so this is the path a
+    // real "Subscribe" click on the new tier takes RIGHT NOW: refuse before
+    // reaching Stripe, with the generic user-facing message, rather than
+    // crashing or opening a checkout against a bad/absent price.
+    it('fails closed on weekly while STRIPE_PRICE_WEEKLY is unprovisioned, without calling Stripe', async () => {
+      delete process.env.STRIPE_PRICE_WEEKLY
+      getSessionUserMock.mockResolvedValue({ ok: true, userId: USER_ID, plan: 'free' })
+      selectResult = [{ plan: 'free', stripeCustomerId: null, stripeSubscriptionId: null }]
+
+      await expect(createCheckoutSession('weekly')).rejects.toThrow('Failed to start checkout')
+      expect(checkoutSessionsCreateMock).not.toHaveBeenCalled()
+    })
+
+    // Semester is withdrawn from sale (MEM-039). The zod enum is the runtime
+    // gate — the `Plan` type alone wouldn't stop a stale client, or a
+    // hand-crafted server-action request, from asking for it.
+    it('refuses a checkout for the withdrawn semester plan', async () => {
+      getSessionUserMock.mockResolvedValue({ ok: true, userId: USER_ID, plan: 'free' })
+      selectResult = [{ plan: 'free', stripeCustomerId: null, stripeSubscriptionId: null }]
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- deliberately bypassing the compile-time Plan union to prove the runtime gate
+      await expect(createCheckoutSession('semester' as any)).rejects.toThrow('Failed to start checkout')
+      expect(checkoutSessionsCreateMock).not.toHaveBeenCalled()
     })
 
     it('reuses an existing Stripe customer id when the user has one', async () => {
