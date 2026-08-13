@@ -92,19 +92,30 @@ beforeEach(() => {
   mockSubscriptionsRetrieve.mockResolvedValue(subscriptionObject())
   mockSubscriptionsUpdate.mockResolvedValue(subscriptionObject({ status: 'active' }))
   delete process.env.STRIPE_PRICE_MONTHLY
-  delete process.env.STRIPE_PRICE_SEMESTER
+  delete process.env.STRIPE_PRICE_WEEKLY
 })
 
 describe('priceIdForPlan', () => {
   it('reads the env var for each plan', () => {
+    process.env.STRIPE_PRICE_WEEKLY = 'price_weekly'
     process.env.STRIPE_PRICE_MONTHLY = 'price_monthly'
-    process.env.STRIPE_PRICE_SEMESTER = 'price_semester'
+    expect(priceIdForPlan('weekly')).toBe('price_weekly')
     expect(priceIdForPlan('monthly')).toBe('price_monthly')
-    expect(priceIdForPlan('semester')).toBe('price_semester')
   })
 
   it('returns null when the env var is unset', () => {
     expect(priceIdForPlan('monthly')).toBeNull()
+  })
+
+  // MEM-039 (issue #89): STRIPE_PRICE_WEEKLY is not provisioned yet — the
+  // real Stripe Price is created by Pranav directly, outside this change.
+  // The unset case is therefore the CURRENT production state, not a
+  // hypothetical: it must return null through the existing fallback (so
+  // createCheckoutSession refuses before ever calling Stripe), never throw
+  // and never fall through to some other plan's price id.
+  it('returns null for weekly while STRIPE_PRICE_WEEKLY is unprovisioned, without borrowing the monthly price', () => {
+    process.env.STRIPE_PRICE_MONTHLY = 'price_monthly'
+    expect(priceIdForPlan('weekly')).toBeNull()
   })
 })
 
@@ -165,7 +176,7 @@ describe('checkout.session.completed', () => {
     await handleStripeWebhookEvent(event('checkout.session.completed', {
       id: 'cs_1',
       client_reference_id: USER_ID,
-      metadata: { plan: 'semester' },
+      metadata: { plan: 'weekly' },
       subscription: SUB_ID,
       customer: CUSTOMER_ID,
     }))
@@ -173,7 +184,7 @@ describe('checkout.session.completed', () => {
     expect(updates).toHaveLength(1)
     expect(updates[0].userId).toBe(USER_ID)
     expect(updates[0].values).toMatchObject({
-      plan: 'semester',
+      plan: 'weekly',
       stripeCustomerId: CUSTOMER_ID,
       stripeSubscriptionId: SUB_ID,
     })
@@ -221,6 +232,19 @@ describe('invoice.payment_succeeded (renewal)', () => {
     expect(updates).toHaveLength(1)
     expect(updates[0].userId).toBe(USER_ID)
     expect(updates[0].values).toEqual({ plan: 'monthly', stripeSubscriptionId: SUB_ID })
+  })
+
+  // MEM-039 (issue #89): a weekly subscription renews every 7 days rather
+  // than every 30, so this handler runs ~4x as often per subscriber as it
+  // used to — pin that the new tier round-trips its own plan value from the
+  // subscription's metadata instead of being coerced to 'monthly'.
+  it('carries a weekly plan through a renewal from the subscription metadata', async () => {
+    selectRows.push([{ id: USER_ID, plan: 'weekly', stripeSubscriptionId: SUB_ID }])
+    mockSubscriptionsRetrieve.mockResolvedValue(subscriptionObject({ metadata: { userId: USER_ID, plan: 'weekly' } }))
+
+    await handleStripeWebhookEvent(event('invoice.payment_succeeded', renewalInvoice))
+
+    expect(updates).toEqual([{ userId: USER_ID, values: { plan: 'weekly', stripeSubscriptionId: SUB_ID } }])
   })
 
   it('IGNORES the first invoice of a new subscription (already handled at checkout)', async () => {

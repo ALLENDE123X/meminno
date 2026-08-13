@@ -6,7 +6,7 @@
  * two real differences in Meminno's own design:
  *
  *   1. SCHEMA: `users` here has no `status`/`accessExpiresAt` columns —
- *      just `plan` ('free' | 'monthly' | 'semester'), `stripeCustomerId`,
+ *      just `plan` ('free' | 'weekly' | 'monthly'), `stripeCustomerId`,
  *      `stripeSubscriptionId` (see lib/db/schema.ts, provisioned by
  *      MEM-002). There is no fixed-length "access window" to extend on
  *      renewal or expire on deletion; `plan` IS the current entitlement,
@@ -67,7 +67,7 @@
  * user-declared completion event where continuing access serves no purpose.
  * Meminno's "Cancel subscription" button has no such signal; it is a plain
  * account action, and cancelling immediately would forfeit the rest of a
- * period the user already paid for (up to ~4 months on the Semester plan)
+ * period the user already paid for (a month on Monthly, a week on Weekly)
  * with no refund — a real consumer-disclosure problem on a live-money path,
  * not just a UX nitpick. `cancel_at_period_end` is the industry-standard
  * fix: no further charge is ever attempted, and `plan` only reverts to
@@ -91,11 +91,37 @@ import { users } from '@/lib/db/schema'
 import { stripe } from '@/lib/stripe'
 import { logger } from '@/lib/logger'
 
-export type Plan = 'monthly' | 'semester'
+/**
+ * The plans a new checkout can be started for (MEM-039, issue #89).
+ *
+ * Changed from `'monthly' | 'semester'`: $17.99/mo proved too high an entry
+ * price to convert a first paying user, so the lineup is now free /
+ * **weekly $4.99** / monthly $17.99, and Semester is withdrawn from sale
+ * while that validates. Removing it from this union was verified safe
+ * before doing it — `select plan, count(*) from public.users group by plan`
+ * against the live project returned exactly one group (`free`, 9 rows, zero
+ * Stripe subscription ids), i.e. this app has never had a paying subscriber
+ * on any tier, so there is no live `plan = 'semester'` row whose
+ * entitlement or renewal this could strand. `users.plan` is plain `text`
+ * (lib/db/schema.ts, deliberately not a pgEnum), so no migration is
+ * involved and any historical value would still round-trip through the
+ * webhook handlers below untouched.
+ */
+export type Plan = 'weekly' | 'monthly'
 
-/** Maps a plan to the env var holding its live Stripe Price id. */
+/**
+ * Maps a plan to the env var holding its live Stripe Price id.
+ *
+ * `STRIPE_PRICE_WEEKLY` is NOT provisioned yet — the real Stripe Price is a
+ * live-money object Pranav creates directly, outside this change (see
+ * CLAUDE.md HARD STOP 7 on secret-store writes). Until it is set, this
+ * returns null for 'weekly' via the same fallback an unset
+ * `STRIPE_PRICE_MONTHLY` would take, and app/billing/actions.ts's
+ * createCheckoutSession throws a clear "Stripe price not configured for
+ * plan: weekly" before ever calling Stripe. Deliberately NOT special-cased.
+ */
 export function priceIdForPlan(plan: Plan): string | null {
-  const priceId = plan === 'monthly' ? process.env.STRIPE_PRICE_MONTHLY : process.env.STRIPE_PRICE_SEMESTER
+  const priceId = plan === 'weekly' ? process.env.STRIPE_PRICE_WEEKLY : process.env.STRIPE_PRICE_MONTHLY
   return priceId ?? null
 }
 
