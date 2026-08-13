@@ -19,7 +19,10 @@ import { cancelStripeSubscription, currentPeriodEndFromSubscription, priceIdForP
 import { limitRequest } from '@/lib/ratelimit'
 import { logger } from '@/lib/logger'
 
-const checkoutSchema = z.object({ plan: z.enum(['monthly', 'semester']) })
+// MEM-039 (issue #89): 'semester' is withdrawn from sale, 'weekly' added —
+// must stay in lockstep with lib/billing.ts's `Plan` union, which this
+// validates at runtime for a value that arrives from a client component.
+const checkoutSchema = z.object({ plan: z.enum(['weekly', 'monthly']) })
 
 export type BillingStatus = {
   plan: string

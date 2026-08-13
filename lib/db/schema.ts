@@ -169,8 +169,12 @@ export const users = pgTable('users', {
   // ever becomes a real problem.
   id: uuid('id').primaryKey(),
   email: text('email').notNull(),
-  // 'free' | 'monthly' | 'semester' - plain text (not pgEnum): exact tier
-  // names/count are still TBD per CLAUDE.md, finalized in MEM-004.
+  // 'free' | 'weekly' | 'monthly' - plain text (not pgEnum), which is
+  // exactly what let MEM-039 (issue #89) restructure the lineup with no
+  // migration at all: 'semester' was withdrawn from sale and 'weekly' added
+  // purely in lib/billing.ts's `Plan` union. Nothing in the DB constrains
+  // this value, so a retired tier's rows (there are none - verified live
+  // before that change) would still round-trip untouched.
   plan: text('plan').notNull().default('free'),
   // Nullable - both unset until MEM-004 wires Stripe billing.
   stripeCustomerId: text('stripe_customer_id'),

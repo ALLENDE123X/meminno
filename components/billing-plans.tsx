@@ -23,10 +23,14 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { createCheckoutSession, cancelSubscription, type BillingStatus } from '@/app/billing/actions'
 import type { Plan } from '@/lib/billing'
 
+// MEM-039 (issue #89): 'semester' withdrawn from sale, 'weekly' added. Every
+// read of this map falls back to the raw `plan` string (`PLAN_LABEL[plan] ??
+// plan`), so a row on any historical tier still renders its own plan name
+// rather than blanking out.
 const PLAN_LABEL: Record<string, string> = {
   free: 'Free',
+  weekly: 'Weekly',
   monthly: 'Monthly',
-  semester: 'Semester',
 }
 
 function PlanCard({
@@ -186,22 +190,27 @@ function BillingContent({ initialStatus }: { initialStatus: BillingStatus }) {
         <CurrentPlanCard status={status} onCancel={handleCancel} loading={loading === 'cancel'} />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2">
+          {/* MEM-039 (issue #89): Weekly replaces Semester. This grid renders
+              only the PURCHASABLE plans — Free needs no checkout and is
+              already what `status.plan` is for anyone seeing this branch, so
+              the landing page's three-card lineup (Free/Weekly/Monthly) shows
+              as two cards here. Keep copy in sync with app/page.tsx by hand. */}
+          <PlanCard
+            plan="weekly"
+            title="Weekly"
+            price="$4.99"
+            period="/wk"
+            description="Higher daily limits for notes, flashcards, and quizzes, billed every week."
+            loading={loading === 'weekly'}
+            onSubscribe={handleCheckout}
+          />
           <PlanCard
             plan="monthly"
             title="Monthly"
             price="$17.99"
             period="/mo"
-            description="Higher daily limits for notes, flashcards, and quizzes, billed every month."
+            description="The same higher limits as Weekly, billed every month at the better per-week price."
             loading={loading === 'monthly'}
-            onSubscribe={handleCheckout}
-          />
-          <PlanCard
-            plan="semester"
-            title="Semester"
-            price="$59.99"
-            period="/4 months"
-            description="Same limits as Monthly, billed once every 4 months — the best per-month price."
-            loading={loading === 'semester'}
             onSubscribe={handleCheckout}
           />
         </div>

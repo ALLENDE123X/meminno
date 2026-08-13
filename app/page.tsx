@@ -198,14 +198,18 @@ export default function Home() {
               </Link>
             </CardContent>
           </Card>
+          {/* MEM-039 (issue #89): Weekly replaces Semester as the third card,
+              and is the highlighted entry point at $4.99. Keep these cards in
+              sync with components/billing-plans.tsx's own PlanCards by hand —
+              the two surfaces hardcode their copy independently. */}
           <Card className="border-black">
             <CardHeader>
-              <CardTitle>Monthly</CardTitle>
-              <CardDescription>Higher monthly limits for notes, flashcards, and quizzes, billed every month.</CardDescription>
+              <CardTitle>Weekly</CardTitle>
+              <CardDescription>Higher daily limits for notes, flashcards, and quizzes, billed every week.</CardDescription>
             </CardHeader>
             <CardContent>
               <p className="text-3xl font-bold">
-                $17.99<span className="text-base font-normal text-zinc-500">/mo</span>
+                $4.99<span className="text-base font-normal text-zinc-500">/wk</span>
               </p>
               <Link href="/billing" className={buttonVariants({ className: "mt-4 w-full" })}>
                 Subscribe
@@ -214,12 +218,12 @@ export default function Home() {
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle>Semester</CardTitle>
-              <CardDescription>Same as monthly, paid once per semester, at the best per-month price.</CardDescription>
+              <CardTitle>Monthly</CardTitle>
+              <CardDescription>The same higher limits as Weekly, billed every month at the better per-week price.</CardDescription>
             </CardHeader>
             <CardContent>
               <p className="text-3xl font-bold">
-                $59.99<span className="text-base font-normal text-zinc-500">/4 months</span>
+                $17.99<span className="text-base font-normal text-zinc-500">/mo</span>
               </p>
               <Link href="/billing" className={buttonVariants({ variant: "outline", className: "mt-4 w-full" })}>
                 Subscribe
