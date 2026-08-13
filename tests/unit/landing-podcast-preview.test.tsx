@@ -42,4 +42,20 @@ describe('LandingPodcastPreview', () => {
     expect(container.querySelector('a')).toBeNull()
     expect(container.querySelector('input')).toBeNull()
   })
+
+  // Regression pin for the mobile-overflow bug the first review round caught.
+  // This card is a grid item in app/page.tsx, and a grid item's default
+  // `min-width: auto` stopped the column track from shrinking below the card's
+  // ~406px min-content width — which overflowed the whole page horizontally at
+  // every common phone width (measured: body.scrollWidth 430 vs clientWidth
+  // 390 at a 390px viewport). jsdom does no layout, so this can only assert the
+  // class is present, not the resulting width; the real check is the browser
+  // measurement recorded in ARCHITECTURE.md. Still worth pinning, because
+  // `min-w-0` reads like a decorative utility and is exactly the kind of class
+  // a future tidy-up would delete without knowing it is load-bearing.
+  it('keeps min-w-0 on the root card so it can shrink inside a grid track', () => {
+    const { container } = render(<LandingPodcastPreview />)
+
+    expect(container.firstElementChild?.className).toContain('min-w-0')
+  })
 })

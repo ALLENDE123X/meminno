@@ -55,8 +55,17 @@ const TRANSCRIPT = [
 ];
 
 export function LandingPodcastPreview() {
+  // min-w-0 on the Card is load-bearing, not decoration: this card is placed
+  // as a grid item in app/page.tsx, and a grid item's default `min-width: auto`
+  // means the column track can't shrink below the card's min-content width
+  // (~406px, floored by the 40-bar waveform's min-w-[2px] bars). That
+  // overflowed the page horizontally at every common phone width (measured:
+  // body.scrollWidth 430 vs clientWidth 390 at 390px). min-width: 0 lets the
+  // track shrink to its container; everything inside already truncates/wraps.
+  // Measured caveat: putting min-w-0 on the grid CONTAINER instead does
+  // nothing — it's the item's automatic minimum size that sizes the track.
   return (
-    <Card className="w-full">
+    <Card className="w-full min-w-0">
       <CardContent className="flex flex-col gap-5 p-6">
         {/* Episode header */}
         <div aria-hidden="true" className="flex items-center gap-4">
