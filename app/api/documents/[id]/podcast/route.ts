@@ -40,9 +40,10 @@ import { documents, podcasts } from '@/lib/db/schema'
 // judgment call, documented per this ticket's dispatch):
 //   - An already-'ready' podcast for this document is RETURNED AS-IS, with a
 //     fresh signed URL and 200 (not 201). It is not regenerated. A podcast
-//     costs ~60x a notes/flashcards/quiz generation and the daily cap is
-//     2/day free, so silently burning a user's whole day's allowance to
-//     re-make something they already have is the wrong default — and unlike
+//     costs ~60x a notes/flashcards/quiz generation and the free cap is
+//     1/WEEK (issue #87), so silently burning a user's entire week's
+//     allowance to re-make something they already have is the wrong default
+//     — even more so than when that cap was daily — and unlike
 //     notes/flashcards/quizzes (where each POST deliberately creates a new
 //     row, since a second take is cheap and often what you want), there is
 //     no cheap second take here. A future explicit `?regenerate=true` is the
@@ -126,7 +127,10 @@ const REASON_STATUS: Record<PodcastFailureReason, number> = {
 // never marked failed: the budget unit is already spent, every later POST
 // 409s forever, every GET leaves MEM-016's poller spinning forever, and the
 // only repair is a manual DB UPDATE this repo has no admin tooling for. On the
-// free plan (2/day) that is half a day's allowance plus a permanently unusable
+// free plan (1/week since issue #87) that is the entire week's allowance —
+// this recovery path got materially more load-bearing when that cap changed
+// from 2/day, since without it a single killed function costs a free user
+// seven days, not twelve hours — plus a permanently unusable
 // document, whose only user-side workaround — delete and re-upload — cascades
 // away that document's notes/flashcards/quizzes too. Recovering it here is
 // cheap and needs no background job.
